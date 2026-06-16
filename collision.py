@@ -9,6 +9,7 @@ from models import (
     CoordinateSnapshot,
     AlarmEvent,
     LockStatus,
+    AlarmType,
 )
 
 DEFAULT_SAFETY_THRESHOLD = 5.0
@@ -125,6 +126,7 @@ def check_collision_between(a_id: str, b_id: str,
         now = time.time()
         return AlarmEvent(
             alarm_id=str(uuid.uuid4()),
+            alarm_type=AlarmType.COLLISION,
             timestamp=now,
             datetime_str=datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
             crane_a_id=a_id,

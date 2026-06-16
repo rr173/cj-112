@@ -63,6 +63,13 @@ class EventType(str, Enum):
     SECTOR_REMOVED = "SECTOR_REMOVED"
 
 
+class AlarmType(str, Enum):
+    COLLISION = "COLLISION"
+    ROTATION_OSCILLATION = "ROTATION_OSCILLATION"
+    TROLLEY_OVERSPEED = "TROLLEY_OVERSPEED"
+    LOAD_MOMENT_WARNING = "LOAD_MOMENT_WARNING"
+
+
 class ArbEventLog(BaseModel):
     event_id: str
     event_type: EventType
@@ -121,15 +128,17 @@ class CoordinateSnapshot(BaseModel):
 
 class AlarmEvent(BaseModel):
     alarm_id: str
+    alarm_type: AlarmType = AlarmType.COLLISION
     timestamp: float
     datetime_str: str
     crane_a_id: str
     crane_b_id: str
-    distance: float
-    safety_threshold: float
-    crane_a_snapshot: CoordinateSnapshot
-    crane_b_snapshot: CoordinateSnapshot
+    distance: Optional[float] = None
+    safety_threshold: Optional[float] = None
+    crane_a_snapshot: Optional[CoordinateSnapshot] = None
+    crane_b_snapshot: Optional[CoordinateSnapshot] = None
     message: str
+    details: Dict = {}
 
 
 class LockStatus(BaseModel):
@@ -195,3 +204,57 @@ class WorkOrder(BaseModel):
 
 class WorkOrderManualAssign(BaseModel):
     crane_id: str = Field(description="指定的塔吊ID")
+
+
+class AnomalyDetectionConfig(BaseModel):
+    sliding_window_size: int = Field(default=600, description="滑动窗口大小(最近N条上报记录)")
+    rotation_reversal_threshold: int = Field(default=10, description="回转震荡反转次数阈值(次/分钟)")
+    max_trolley_speed: float = Field(default=2.0, description="最大变幅速度(米/秒)")
+    trolley_overspeed_count: int = Field(default=3, description="连续超速次数阈值")
+    load_moment_ratio_threshold: float = Field(default=0.7, description="力矩预警阈值(最大力矩的比例)")
+    load_moment_duration_threshold: float = Field(default=5.0, description="力矩超限持续时间阈值(秒)")
+    rotation_freeze_duration: float = Field(default=3.0, description="回转震荡告警后冻结时长(秒)")
+
+
+class CraneStatusRecord(BaseModel):
+    crane_id: str
+    rotation_angle: float
+    trolley_position: float
+    hook_height: float
+    timestamp: float
+
+
+class SlidingWindowStats(BaseModel):
+    crane_id: str
+    window_size: int
+    current_count: int
+    avg_rotation_speed: float
+    avg_trolley_speed: float
+    current_moment: float
+    max_moment: float
+    moment_ratio: float
+    alarm_count_in_window: int
+    first_timestamp: Optional[float] = None
+    last_timestamp: Optional[float] = None
+    rotation_reversal_count: int = 0
+    trolley_overspeed_count: int = 0
+
+
+class AnomalyEvent(BaseModel):
+    event_id: str
+    alarm_type: AlarmType
+    timestamp: float
+    datetime_str: str
+    crane_id: str
+    message: str
+    details: Dict
+    resolved: bool = False
+    resolved_at: Optional[float] = None
+
+
+class CraneFreezeStatus(BaseModel):
+    crane_id: str
+    is_frozen: bool
+    frozen_at: Optional[float] = None
+    frozen_reason: Optional[str] = None
+    unfreeze_at: Optional[float] = None

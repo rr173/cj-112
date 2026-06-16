@@ -1,9 +1,9 @@
 import time
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 
-from models import CraneStatus, CraneFullStatus
+from models import CraneStatus, CraneFullStatus, AlarmType
 from collision import (
     cranes_config,
     cranes_current_status,
@@ -24,12 +24,17 @@ from arbiter import (
     log_arb_event,
     EventType,
 )
+from anomaly_detector import (
+    process_status_report_async,
+    is_crane_frozen,
+    cranes_freeze_status,
+)
 
 router = APIRouter(prefix="/api", tags=["塔吊状态"])
 
 
 @router.post("/crane/status", summary="上报塔吊状态(每秒一次)")
-def report_crane_status(status: CraneStatus):
+def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     if status.crane_id not in cranes_config:
         raise HTTPException(status_code=404, detail=f"塔吊 {status.crane_id} 不存在")
 
@@ -42,6 +47,19 @@ def report_crane_status(status: CraneStatus):
                 "crane_id": status.crane_id,
                 "locked_at": lock.locked_at,
                 "locked_reason": lock.locked_reason,
+            }
+        )
+
+    if is_crane_frozen(status.crane_id):
+        freeze = cranes_freeze_status[status.crane_id]
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "塔吊处于异常检测冻结状态，暂时拒绝状态上报",
+                "crane_id": status.crane_id,
+                "frozen_at": freeze.frozen_at,
+                "frozen_reason": freeze.frozen_reason,
+                "unfreeze_at": freeze.unfreeze_at,
             }
         )
 
@@ -133,6 +151,8 @@ def report_crane_status(status: CraneStatus):
 
     status.timestamp = status.timestamp or time.time()
     cranes_current_status[status.crane_id] = status
+
+    background_tasks.add_task(process_status_report_async, status)
 
     triggered_alarms: List = []
     other_ids = [cid for cid in cranes_current_status.keys() if cid != status.crane_id]
@@ -247,10 +267,16 @@ def get_all_cranes():
 
 
 @router.get("/alarms", summary="查询告警历史")
-def get_alarm_history(crane_id: Optional[str] = None, limit: int = 100):
+def get_alarm_history(
+    crane_id: Optional[str] = None,
+    alarm_type: Optional[AlarmType] = None,
+    limit: int = 100
+):
     result = alarm_history
     if crane_id:
         result = [a for a in result if a.crane_a_id == crane_id or a.crane_b_id == crane_id]
+    if alarm_type:
+        result = [a for a in result if a.alarm_type == alarm_type]
     return result[-limit:]
 
 
