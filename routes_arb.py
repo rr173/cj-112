@@ -9,8 +9,8 @@ from models import (
     TokenReleaseRequest,
     EventType,
 )
+import arbiter
 from arbiter import (
-    zone_arb_config,
     overlap_sectors,
     token_statuses,
     arb_event_logs,
@@ -32,12 +32,11 @@ router = APIRouter(prefix="/api/arb", tags=["令牌仲裁"])
 
 @router.get("/config", summary="查询作业区域仲裁配置")
 def get_arb_config():
-    return zone_arb_config
+    return arbiter.zone_arb_config
 
 
 @router.put("/config", summary="更新作业区域仲裁配置")
 def update_arb_config(new_config: ZoneArbConfig):
-    import arbiter
     arbiter.zone_arb_config = new_config
     return {
         "code": 0,
@@ -160,7 +159,7 @@ def get_crane_tokens(crane_id: str):
             "queue_position": pos,
             "requested_at": req_at,
             "wait_elapsed_seconds": (time.time() - req_at) if req_at else 0,
-            "timeout_seconds": zone_arb_config.token_wait_timeout,
+            "timeout_seconds": arbiter.zone_arb_config.token_wait_timeout,
             "sector": overlap_sectors.get(sec_id),
         })
 
