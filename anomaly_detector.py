@@ -37,14 +37,55 @@ cranes_consecutive_overspeed: Dict[str, int] = {}
 
 def init_anomaly_detector():
     for crane_id in cranes_config.keys():
-        cranes_sliding_window[crane_id] = deque(maxlen=anomaly_config.sliding_window_size)
-        cranes_anomaly_events[crane_id] = []
-        cranes_freeze_status[crane_id] = CraneFreezeStatus(
-            crane_id=crane_id,
-            is_frozen=False
-        )
-        cranes_moment_over_start[crane_id] = None
-        cranes_consecutive_overspeed[crane_id] = 0
+        if crane_id not in cranes_sliding_window:
+            cranes_sliding_window[crane_id] = deque(maxlen=anomaly_config.sliding_window_size)
+        if crane_id not in cranes_anomaly_events:
+            cranes_anomaly_events[crane_id] = []
+        if crane_id not in cranes_freeze_status:
+            cranes_freeze_status[crane_id] = CraneFreezeStatus(
+                crane_id=crane_id,
+                is_frozen=False
+            )
+        if crane_id not in cranes_moment_over_start:
+            cranes_moment_over_start[crane_id] = None
+        if crane_id not in cranes_consecutive_overspeed:
+            cranes_consecutive_overspeed[crane_id] = 0
+
+
+def update_anomaly_config(new_config: AnomalyDetectionConfig):
+    old_window_size = anomaly_config.sliding_window_size
+
+    anomaly_config.sliding_window_size = new_config.sliding_window_size
+    anomaly_config.rotation_reversal_threshold = new_config.rotation_reversal_threshold
+    anomaly_config.max_trolley_speed = new_config.max_trolley_speed
+    anomaly_config.trolley_overspeed_count = new_config.trolley_overspeed_count
+    anomaly_config.load_moment_ratio_threshold = new_config.load_moment_ratio_threshold
+    anomaly_config.load_moment_duration_threshold = new_config.load_moment_duration_threshold
+    anomaly_config.rotation_freeze_duration = new_config.rotation_freeze_duration
+
+    if new_config.sliding_window_size != old_window_size:
+        for crane_id in cranes_sliding_window.keys():
+            old_window = cranes_sliding_window[crane_id]
+            new_window = deque(maxlen=new_config.sliding_window_size)
+            for item in list(old_window)[-new_config.sliding_window_size:]:
+                new_window.append(item)
+            cranes_sliding_window[crane_id] = new_window
+
+    refresh_all_freeze_status()
+
+
+def get_anomaly_config() -> AnomalyDetectionConfig:
+    return anomaly_config
+
+
+def refresh_all_freeze_status():
+    for crane_id in list(cranes_freeze_status.keys()):
+        freeze = cranes_freeze_status[crane_id]
+        if freeze.is_frozen and freeze.unfreeze_at and time.time() >= freeze.unfreeze_at:
+            freeze.is_frozen = False
+            freeze.frozen_at = None
+            freeze.frozen_reason = None
+            freeze.unfreeze_at = None
 
 
 def ensure_crane_initialized(crane_id: str):

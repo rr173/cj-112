@@ -94,7 +94,9 @@ def health_check():
         cranes_sliding_window,
         cranes_anomaly_events,
         cranes_freeze_status,
+        refresh_all_freeze_status,
     )
+    refresh_all_freeze_status()
     total_anomaly_events = sum(len(events) for events in cranes_anomaly_events.values())
     frozen_cranes = sum(1 for f in cranes_freeze_status.values() if f.is_frozen)
     total_window_records = sum(len(w) for w in cranes_sliding_window.values())

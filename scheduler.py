@@ -67,7 +67,8 @@ def _distance_to_lift(crane_id: str, lift_x: float, lift_y: float) -> float:
 
 
 def _find_best_crane(lift_x: float, lift_y: float,
-                     drop_x: float, drop_y: float, weight: float) -> Optional[str]:
+                     drop_x: float, drop_y: float, weight: float,
+                     priority: WorkOrderPriority) -> Optional[str]:
     candidates = []
     for crane_id in cranes_config:
         if can_crane_cover(crane_id, lift_x, lift_y, drop_x, drop_y, weight):
@@ -76,11 +77,15 @@ def _find_best_crane(lift_x: float, lift_y: float,
     if not candidates:
         return None
 
-    candidates.sort(key=lambda cid: (
-        _get_queue_length(cid),
-        _distance_to_lift(cid, lift_x, lift_y),
-        cid,
-    ))
+    priority_weight = PRIORITY_WEIGHT.get(priority, 2)
+
+    def sort_key(cid):
+        queue_len = _get_queue_length(cid)
+        distance = _distance_to_lift(cid, lift_x, lift_y)
+        adjusted_queue_len = queue_len / priority_weight
+        return (adjusted_queue_len, distance, cid)
+
+    candidates.sort(key=sort_key)
     return candidates[0]
 
 
@@ -126,6 +131,7 @@ def submit_order(create: WorkOrderCreate) -> Dict:
         create.lift_x, create.lift_y,
         create.drop_x, create.drop_y,
         create.weight,
+        create.priority,
     )
 
     if best_crane is None:
@@ -160,7 +166,22 @@ def _assign_order_to_crane(order_id: str, crane_id: str):
     order.updated_at = now
     order.failure_reason = None
     _init_crane_queue(crane_id)
-    crane_queues[crane_id].append(order_id)
+
+    priority_weight = PRIORITY_WEIGHT.get(order.priority, 2)
+    queue = crane_queues[crane_id]
+
+    inserted = False
+    for i, existing_id in enumerate(list(queue)):
+        existing_order = work_orders.get(existing_id)
+        if existing_order:
+            existing_weight = PRIORITY_WEIGHT.get(existing_order.priority, 2)
+            if priority_weight > existing_weight:
+                queue.insert(i, order_id)
+                inserted = True
+                break
+
+    if not inserted:
+        queue.append(order_id)
 
 
 def manually_assign_order(order_id: str, crane_id: str) -> Dict:
@@ -253,13 +274,30 @@ def start_order(order_id: str) -> Dict:
 
     token_results = []
     acquired_sectors = []
+    failed_tokens = []
     for sec_id in sector_ids:
         try:
             result = request_token(crane_id, sec_id)
             token_results.append(result)
-            acquired_sectors.append(sec_id)
+            if result.get("granted", False):
+                acquired_sectors.append(sec_id)
+            else:
+                failed_tokens.append(sec_id)
         except Exception as e:
-            token_results.append({"sector_id": sec_id, "error": str(e)})
+            failed_tokens.append(sec_id)
+            token_results.append({"sector_id": sec_id, "error": str(e), "granted": False})
+
+    if failed_tokens:
+        for sec_id in acquired_sectors:
+            try:
+                release_token(crane_id, sec_id)
+            except Exception:
+                pass
+        return {
+            "error": f"无法获取所有必需的扇区令牌，失败扇区: {', '.join(failed_tokens)}",
+            "token_results": token_results,
+            "failed_sectors": failed_tokens,
+        }
 
     now = time.time()
     order.status = WorkOrderStatus.EXECUTING
@@ -273,7 +311,7 @@ def start_order(order_id: str) -> Dict:
     return {
         "order": order,
         "token_results": token_results,
-        "message": f"工单已开始执行，已申请 {len(acquired_sectors)} 个扇区令牌",
+        "message": f"工单已开始执行，已成功获取 {len(acquired_sectors)} 个扇区令牌",
     }
 
 
@@ -284,13 +322,39 @@ def complete_order(order_id: str) -> Dict:
     if order.status != WorkOrderStatus.EXECUTING:
         return {"error": f"只有执行中状态的工单可以标记完成，当前状态为 {order.status.value}"}
 
+    from arbiter import token_statuses
+
+    crane_id = order.assigned_crane_id
+    if not crane_id:
+        return {"error": "工单未分配塔吊，无法完成"}
+
+    for sec_id in order.acquired_sectors:
+        ts = token_statuses.get(sec_id)
+        if ts and ts.holder_crane_id and ts.holder_crane_id != crane_id:
+            return {
+                "error": f"塔吊 {crane_id} 未持有扇区 {sec_id} 的令牌，当前持有者为 {ts.holder_crane_id}",
+                "sector_id": sec_id,
+                "current_holder": ts.holder_crane_id,
+            }
+
     release_results = []
+    failed_releases = []
     for sec_id in order.acquired_sectors:
         try:
-            result = release_token(order.assigned_crane_id, sec_id)
+            result = release_token(crane_id, sec_id)
             release_results.append(result)
+            if not result.get("released", True):
+                failed_releases.append(sec_id)
         except Exception as e:
-            release_results.append({"sector_id": sec_id, "error": str(e)})
+            failed_releases.append(sec_id)
+            release_results.append({"sector_id": sec_id, "error": str(e), "released": False})
+
+    if failed_releases:
+        return {
+            "error": f"部分令牌释放失败: {', '.join(failed_releases)}",
+            "token_release_results": release_results,
+            "failed_sectors": failed_releases,
+        }
 
     now = time.time()
     order.status = WorkOrderStatus.COMPLETED
@@ -298,9 +362,9 @@ def complete_order(order_id: str) -> Dict:
     order.updated_at = now
     order.acquired_sectors = []
 
-    if order.assigned_crane_id:
-        _init_crane_queue(order.assigned_crane_id)
-        crane_history[order.assigned_crane_id].append(order_id)
+    if crane_id:
+        _init_crane_queue(crane_id)
+        crane_history[crane_id].append(order_id)
 
     return {
         "order": order,

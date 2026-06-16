@@ -20,6 +20,8 @@ from anomaly_detector import (
     process_status_report_async,
     is_crane_frozen,
     init_anomaly_detector,
+    update_anomaly_config,
+    refresh_all_freeze_status,
 )
 
 router = APIRouter(prefix="/api/anomaly", tags=["异常检测"])
@@ -62,13 +64,11 @@ def get_anomaly_config():
 
 
 @router.put("/config", summary="更新异常检测配置")
-def update_anomaly_config(config: AnomalyDetectionConfig):
-    global anomaly_config
-    anomaly_config = config
-    init_anomaly_detector()
+def update_anomaly_config_route(config: AnomalyDetectionConfig):
+    update_anomaly_config(config)
     return {
         "code": 0,
-        "message": "配置已更新",
+        "message": "配置已更新，历史数据已保留",
         "config": anomaly_config
     }
 
@@ -127,18 +127,18 @@ def get_crane_freeze_status(crane_id: str):
     if crane_id not in cranes_config:
         raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 不存在")
 
+    refresh_all_freeze_status()
     if crane_id not in cranes_freeze_status:
         return CraneFreezeStatus(crane_id=crane_id, is_frozen=False)
 
-    is_crane_frozen(crane_id)
     return cranes_freeze_status[crane_id]
 
 
 @router.get("/freeze-statuses", summary="查询所有塔吊冻结状态")
 def get_all_freeze_statuses():
+    refresh_all_freeze_status()
     result = []
     for crane_id in cranes_config.keys():
-        is_crane_frozen(crane_id)
         status = cranes_freeze_status.get(
             crane_id,
             CraneFreezeStatus(crane_id=crane_id, is_frozen=False)
