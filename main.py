@@ -1,4 +1,6 @@
 import time
+import threading
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI
 
@@ -21,7 +23,9 @@ from routes_crane import router as crane_router
 from routes_arb import router as arb_router
 from routes_order import router as order_router
 from routes_anomaly import router as anomaly_router
+from routes_report import router as report_router
 from anomaly_detector import init_anomaly_detector
+from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -29,6 +33,39 @@ app.include_router(crane_router)
 app.include_router(arb_router)
 app.include_router(order_router)
 app.include_router(anomaly_router)
+app.include_router(report_router)
+
+
+_daily_report_scheduler_thread: threading.Thread = None
+_scheduler_running = False
+
+
+def _get_next_run_time() -> float:
+    now = datetime.now()
+    next_run = now.replace(hour=23, minute=50, second=0, microsecond=0)
+    if now >= next_run:
+        next_run = next_run + timedelta(days=1)
+    return (next_run - now).total_seconds()
+
+
+def _daily_report_scheduler_loop():
+    global _scheduler_running
+    _scheduler_running = True
+    while _scheduler_running:
+        wait_seconds = _get_next_run_time()
+        print(f"[日报定时任务] 下一次自动生成日报将在 {wait_seconds:.0f} 秒后执行 ({datetime.now() + timedelta(seconds=wait_seconds):%Y-%m-%d %H:%M:%S})")
+        time.sleep(min(wait_seconds, 60))
+        if not _scheduler_running:
+            break
+        if datetime.now() >= datetime.now().replace(hour=23, minute=50, second=0, microsecond=0):
+            try:
+                today = get_today_date_str()
+                print(f"[日报定时任务] 开始自动生成 {today} 的日报...")
+                result = generate_daily_reports(today)
+                print(f"[日报定时任务] 日报生成完成: 成功 {result['generated_count']} 份, 跳过 {result['skipped_count']} 份, 锁定 {result['locked_count']} 份")
+            except Exception as e:
+                print(f"[日报定时任务] 自动生成日报失败: {e}")
+            time.sleep(60)
 
 
 @app.on_event("startup")
@@ -83,6 +120,20 @@ def init_cranes():
 
     rebuild_all_overlap_sectors()
     init_anomaly_detector()
+    init_daily_report_module()
+
+    global _daily_report_scheduler_thread
+    if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
+        _daily_report_scheduler_thread = threading.Thread(target=_daily_report_scheduler_loop, daemon=True)
+        _daily_report_scheduler_thread.start()
+        print("[日报定时任务] 已启动，每天 23:50 自动生成当日日报")
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    global _scheduler_running
+    _scheduler_running = False
+    print("[日报定时任务] 正在停止...")
 
 
 @app.get("/health", summary="健康检查")
@@ -96,6 +147,7 @@ def health_check():
         cranes_freeze_status,
         refresh_all_freeze_status,
     )
+    from daily_report import daily_reports, status_report_history, DailyReportStatus
     refresh_all_freeze_status()
     total_anomaly_events = sum(len(events) for events in cranes_anomaly_events.values())
     frozen_cranes = sum(1 for f in cranes_freeze_status.values() if f.is_frozen)
@@ -106,6 +158,12 @@ def health_check():
     overspeed_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.TROLLEY_OVERSPEED)
     moment_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.LOAD_MOMENT_WARNING)
     collision_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.COLLISION)
+
+    total_reports = len(daily_reports)
+    pending_reports = sum(1 for r in daily_reports.values() if r.status == DailyReportStatus.PENDING)
+    approved_reports = sum(1 for r in daily_reports.values() if r.status == DailyReportStatus.APPROVED)
+    rejected_reports = sum(1 for r in daily_reports.values() if r.status == DailyReportStatus.REJECTED)
+    total_status_records = sum(len(records) for records in status_report_history.values())
 
     return {
         "status": "ok",
@@ -124,5 +182,12 @@ def health_check():
         "active_tokens": sum(1 for t in token_statuses.values() if t.holder_crane_id),
         "total_window_records": total_window_records,
         "total_anomaly_events": total_anomaly_events,
+        "daily_report_stats": {
+            "total_reports": total_reports,
+            "pending_reports": pending_reports,
+            "approved_reports": approved_reports,
+            "rejected_reports": rejected_reports,
+        },
+        "total_status_history_records": total_status_records,
         "timestamp": time.time(),
     }

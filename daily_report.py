@@ -1,0 +1,415 @@
+import time
+import uuid
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+
+from models import (
+    DailyReport,
+    DailyReportStatus,
+    DailyReportDataStatus,
+    DailyReportSummaryItem,
+    DailyReportSummaryResponse,
+    AlarmStats,
+    FreezeLockStats,
+    TokenStats,
+    AlarmType,
+    WorkOrderStatus,
+    EventType,
+    CraneStatusRecord,
+)
+from collision import cranes_config, alarm_history
+from arbiter import arb_event_logs
+from scheduler import work_orders
+from anomaly_detector import cranes_anomaly_events
+
+
+status_report_history: Dict[str, List[CraneStatusRecord]] = {}
+
+
+freeze_lock_history: List[Dict] = []
+
+
+daily_reports: Dict[str, DailyReport] = {}
+
+
+def init_daily_report_module():
+    for crane_id in cranes_config.keys():
+        if crane_id not in status_report_history:
+            status_report_history[crane_id] = []
+
+
+def add_status_report_to_history(record: CraneStatusRecord):
+    if record.crane_id not in status_report_history:
+        status_report_history[record.crane_id] = []
+    status_report_history[record.crane_id].append(record)
+
+
+def add_freeze_lock_record(crane_id: str, action_type: str, action: str,
+                           timestamp: float, reason: Optional[str] = None,
+                           end_timestamp: Optional[float] = None):
+    freeze_lock_history.append({
+        "crane_id": crane_id,
+        "action_type": action_type,
+        "action": action,
+        "timestamp": timestamp,
+        "reason": reason,
+        "end_timestamp": end_timestamp,
+    })
+
+
+def get_date_range(date_str: str) -> Tuple[float, float]:
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_dt = start_dt + timedelta(days=1)
+    return start_dt.timestamp(), end_dt.timestamp()
+
+
+def get_today_date_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def count_completed_orders(crane_id: str, start_ts: float, end_ts: float) -> int:
+    count = 0
+    for order in work_orders.values():
+        if (order.assigned_crane_id == crane_id and
+                order.status == WorkOrderStatus.COMPLETED and
+                order.completed_at is not None and
+                start_ts <= order.completed_at < end_ts):
+            count += 1
+    return count
+
+
+def get_incomplete_orders(crane_id: str, end_ts: float) -> List[str]:
+    incomplete = []
+    for order in work_orders.values():
+        if (order.assigned_crane_id == crane_id and
+                order.status == WorkOrderStatus.EXECUTING and
+                order.started_at is not None and
+                order.started_at < end_ts):
+            incomplete.append(order.order_id)
+    return incomplete
+
+
+def count_status_reports(crane_id: str, start_ts: float, end_ts: float) -> Tuple[int, Optional[float], Optional[float]]:
+    reports = status_report_history.get(crane_id, [])
+    day_reports = [r for r in reports if start_ts <= r.timestamp < end_ts]
+    if not day_reports:
+        return 0, None, None
+    first_ts = min(r.timestamp for r in day_reports)
+    last_ts = max(r.timestamp for r in day_reports)
+    return len(day_reports), first_ts, last_ts
+
+
+def count_alarms(crane_id: str, start_ts: float, end_ts: float) -> AlarmStats:
+    stats = AlarmStats()
+    for alarm in alarm_history:
+        if not (start_ts <= alarm.timestamp < end_ts):
+            continue
+        if alarm.crane_a_id == crane_id or alarm.crane_b_id == crane_id:
+            if alarm.alarm_type == AlarmType.COLLISION:
+                stats.collision += 1
+            elif alarm.alarm_type == AlarmType.ROTATION_OSCILLATION:
+                stats.rotation_oscillation += 1
+            elif alarm.alarm_type == AlarmType.TROLLEY_OVERSPEED:
+                stats.trolley_overspeed += 1
+            elif alarm.alarm_type == AlarmType.LOAD_MOMENT_WARNING:
+                stats.load_moment_warning += 1
+
+    for event_list in cranes_anomaly_events.values():
+        for event in event_list:
+            if not (start_ts <= event.timestamp < end_ts):
+                continue
+            if event.crane_id == crane_id:
+                if event.alarm_type == AlarmType.ROTATION_OSCILLATION:
+                    stats.rotation_oscillation += 1
+                elif event.alarm_type == AlarmType.TROLLEY_OVERSPEED:
+                    stats.trolley_overspeed += 1
+                elif event.alarm_type == AlarmType.LOAD_MOMENT_WARNING:
+                    stats.load_moment_warning += 1
+
+    return stats
+
+
+def count_freeze_lock(crane_id: str, start_ts: float, end_ts: float) -> FreezeLockStats:
+    stats = FreezeLockStats()
+    active_freeze: Optional[Dict] = None
+    active_lock: Optional[Dict] = None
+
+    for record in freeze_lock_history:
+        if record["crane_id"] != crane_id:
+            continue
+        if not (start_ts <= record["timestamp"] < end_ts):
+            continue
+
+        if record["action_type"] == "FREEZE":
+            if record["action"] == "START":
+                active_freeze = record
+                stats.freeze_count += 1
+            elif record["action"] == "END" and active_freeze:
+                duration = record["timestamp"] - active_freeze["timestamp"]
+                stats.freeze_total_seconds += duration
+                active_freeze = None
+
+        elif record["action_type"] == "LOCK":
+            if record["action"] == "START":
+                active_lock = record
+                stats.lock_count += 1
+            elif record["action"] == "END" and active_lock:
+                duration = record["timestamp"] - active_lock["timestamp"]
+                stats.lock_total_seconds += duration
+                active_lock = None
+
+    if active_freeze:
+        end_time = min(end_ts, time.time())
+        stats.freeze_total_seconds += end_time - active_freeze["timestamp"]
+
+    if active_lock:
+        end_time = min(end_ts, time.time())
+        stats.lock_total_seconds += end_time - active_lock["timestamp"]
+
+    return stats
+
+
+def count_token_usage(crane_id: str, start_ts: float, end_ts: float) -> TokenStats:
+    stats = TokenStats()
+    queue_times: Dict[str, float] = {}
+    wait_durations: List[float] = []
+
+    for event in arb_event_logs:
+        if event.crane_id != crane_id:
+            continue
+        if not (start_ts <= event.timestamp < end_ts):
+            continue
+
+        if event.event_type == EventType.TOKEN_ACQUIRED:
+            stats.request_count += 1
+            req_id = event.details.get("request_id")
+            from_queue = event.details.get("from_queue", False)
+            if req_id and from_queue and req_id in queue_times:
+                wait_duration = event.timestamp - queue_times[req_id]
+                wait_durations.append(wait_duration)
+                del queue_times[req_id]
+
+        elif event.event_type == EventType.TOKEN_ENQUEUED:
+            stats.queue_count += 1
+            stats.request_count += 1
+            req_id = event.details.get("request_id")
+            if req_id:
+                queue_times[req_id] = event.timestamp
+
+        elif event.event_type == EventType.TOKEN_DEQUEUED:
+            req_id = event.details.get("request_id")
+            if req_id and req_id in queue_times:
+                del queue_times[req_id]
+
+        elif event.event_type == EventType.TOKEN_REQUEST_TIMEOUT:
+            req_id = event.details.get("request_id")
+            if req_id and req_id in queue_times:
+                del queue_times[req_id]
+
+    if wait_durations:
+        stats.avg_wait_seconds = sum(wait_durations) / len(wait_durations)
+
+    return stats
+
+
+def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[DailyReport]:
+    if crane_id not in cranes_config:
+        return None
+
+    start_ts, end_ts = get_date_range(date_str)
+
+    report_count, first_ts, last_ts = count_status_reports(crane_id, start_ts, end_ts)
+    if report_count == 0:
+        return None
+
+    completed_orders = count_completed_orders(crane_id, start_ts, end_ts)
+    incomplete_orders = get_incomplete_orders(crane_id, end_ts)
+    alarm_stats = count_alarms(crane_id, start_ts, end_ts)
+    freeze_lock_stats = count_freeze_lock(crane_id, start_ts, end_ts)
+    token_stats = count_token_usage(crane_id, start_ts, end_ts)
+
+    work_duration = 0.0
+    if first_ts and last_ts:
+        work_duration = last_ts - first_ts
+
+    data_status = DailyReportDataStatus.COMPLETE
+    remarks = ""
+    if incomplete_orders:
+        data_status = DailyReportDataStatus.INCOMPLETE
+        remarks = f"存在未完成工单: {', '.join(incomplete_orders)}"
+
+    report_key = f"{crane_id}_{date_str}"
+    existing_report = daily_reports.get(report_key)
+
+    if existing_report and existing_report.status == DailyReportStatus.APPROVED:
+        return None
+
+    now = time.time()
+    report = DailyReport(
+        report_id=str(uuid.uuid4()) if not existing_report else existing_report.report_id,
+        crane_id=crane_id,
+        report_date=date_str,
+        completed_orders=completed_orders,
+        total_lifts=report_count,
+        work_duration_seconds=work_duration,
+        first_report_time=first_ts,
+        last_report_time=last_ts,
+        alarm_stats=alarm_stats,
+        freeze_lock_stats=freeze_lock_stats,
+        token_stats=token_stats,
+        data_status=data_status,
+        incomplete_orders=incomplete_orders,
+        remarks=remarks,
+        status=DailyReportStatus.PENDING,
+        generated_at=existing_report.generated_at if existing_report else now,
+        updated_at=now,
+    )
+
+    daily_reports[report_key] = report
+    return report
+
+
+def generate_daily_reports(date_str: Optional[str] = None, crane_id: Optional[str] = None) -> Dict:
+    target_date = date_str or get_today_date_str()
+    generated = []
+    skipped = []
+    locked = []
+
+    crane_ids = [crane_id] if crane_id else list(cranes_config.keys())
+
+    for cid in crane_ids:
+        report = generate_daily_report_for_crane(cid, target_date)
+        report_key = f"{cid}_{target_date}"
+        if report is None:
+            if report_key in daily_reports and daily_reports[report_key].status == DailyReportStatus.APPROVED:
+                locked.append(cid)
+            else:
+                skipped.append(cid)
+        else:
+            generated.append(report)
+
+    return {
+        "date": target_date,
+        "generated_count": len(generated),
+        "skipped_count": len(skipped),
+        "locked_count": len(locked),
+        "generated_reports": generated,
+        "skipped_cranes": skipped,
+        "locked_cranes": locked,
+    }
+
+
+def get_daily_reports(start_date: Optional[str] = None, end_date: Optional[str] = None,
+                      status: Optional[DailyReportStatus] = None,
+                      crane_id: Optional[str] = None) -> List[DailyReport]:
+    reports = list(daily_reports.values())
+
+    if crane_id:
+        reports = [r for r in reports if r.crane_id == crane_id]
+
+    if status:
+        reports = [r for r in reports if r.status == status]
+
+    if start_date:
+        reports = [r for r in reports if r.report_date >= start_date]
+
+    if end_date:
+        reports = [r for r in reports if r.report_date <= end_date]
+
+    reports.sort(key=lambda r: (r.report_date, r.crane_id), reverse=True)
+    return reports
+
+
+def get_daily_report(report_id: str) -> Optional[DailyReport]:
+    for report in daily_reports.values():
+        if report.report_id == report_id:
+            return report
+    return None
+
+
+def approve_daily_report(report_id: str, action: str, approver: str,
+                         remarks: Optional[str] = None) -> Dict:
+    report = get_daily_report(report_id)
+    if not report:
+        return {"error": "日报不存在"}
+
+    if report.status == DailyReportStatus.APPROVED:
+        return {"error": "日报已审批通过，不可重复审批"}
+
+    if action not in ["APPROVE", "REJECT"]:
+        return {"error": "无效的审批动作，必须是 APPROVE 或 REJECT"}
+
+    now = time.time()
+    if action == "APPROVE":
+        report.status = DailyReportStatus.APPROVED
+    else:
+        report.status = DailyReportStatus.REJECTED
+
+    report.approver = approver
+    report.approval_remarks = remarks or ""
+    report.approved_at = now
+    report.updated_at = now
+
+    return {"success": True, "report": report}
+
+
+def generate_summary(start_date: str, end_date: str) -> DailyReportSummaryResponse:
+    reports = get_daily_reports(start_date=start_date, end_date=end_date)
+
+    crane_stats: Dict[str, Dict] = {}
+    for report in reports:
+        if report.crane_id not in crane_stats:
+            config = cranes_config.get(report.crane_id)
+            crane_stats[report.crane_id] = {
+                "crane_name": config.name if config else report.crane_id,
+                "total_reports": 0,
+                "total_completed_orders": 0,
+                "total_lifts": 0,
+                "total_work_seconds": 0.0,
+                "total_alarms": 0,
+                "total_freezes": 0,
+                "total_locks": 0,
+                "total_token_requests": 0,
+                "total_token_queues": 0,
+            }
+
+        s = crane_stats[report.crane_id]
+        s["total_reports"] += 1
+        s["total_completed_orders"] += report.completed_orders
+        s["total_lifts"] += report.total_lifts
+        s["total_work_seconds"] += report.work_duration_seconds
+        s["total_alarms"] += (
+            report.alarm_stats.collision +
+            report.alarm_stats.rotation_oscillation +
+            report.alarm_stats.trolley_overspeed +
+            report.alarm_stats.load_moment_warning
+        )
+        s["total_freezes"] += report.freeze_lock_stats.freeze_count
+        s["total_locks"] += report.freeze_lock_stats.lock_count
+        s["total_token_requests"] += report.token_stats.request_count
+        s["total_token_queues"] += report.token_stats.queue_count
+
+    summaries = []
+    for crane_id, stats in crane_stats.items():
+        summaries.append(DailyReportSummaryItem(
+            crane_id=crane_id,
+            crane_name=stats["crane_name"],
+            total_reports=stats["total_reports"],
+            total_completed_orders=stats["total_completed_orders"],
+            total_lifts=stats["total_lifts"],
+            total_work_seconds=stats["total_work_seconds"],
+            total_alarms=stats["total_alarms"],
+            total_freezes=stats["total_freezes"],
+            total_locks=stats["total_locks"],
+            total_token_requests=stats["total_token_requests"],
+            total_token_queues=stats["total_token_queues"],
+        ))
+
+    summaries.sort(key=lambda x: x.crane_id)
+
+    return DailyReportSummaryResponse(
+        start_date=start_date,
+        end_date=end_date,
+        summaries=summaries,
+    )

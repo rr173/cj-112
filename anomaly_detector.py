@@ -79,13 +79,15 @@ def get_anomaly_config() -> AnomalyDetectionConfig:
 
 
 def refresh_all_freeze_status():
+    now = time.time()
     for crane_id in list(cranes_freeze_status.keys()):
         freeze = cranes_freeze_status[crane_id]
-        if freeze.is_frozen and freeze.unfreeze_at and time.time() >= freeze.unfreeze_at:
+        if freeze.is_frozen and freeze.unfreeze_at and now >= freeze.unfreeze_at:
             freeze.is_frozen = False
             freeze.frozen_at = None
             freeze.frozen_reason = None
             freeze.unfreeze_at = None
+            unfreeze_crane_record(crane_id, now)
 
 
 def ensure_crane_initialized(crane_id: str):
@@ -127,6 +129,19 @@ def freeze_crane(crane_id: str, reason: str, duration: float):
         frozen_reason=reason,
         unfreeze_at=now + duration
     )
+    try:
+        from daily_report import add_freeze_lock_record
+        add_freeze_lock_record(crane_id, "FREEZE", "START", now, reason, now + duration)
+    except ImportError:
+        pass
+
+
+def unfreeze_crane_record(crane_id: str, timestamp: float):
+    try:
+        from daily_report import add_freeze_lock_record
+        add_freeze_lock_record(crane_id, "FREEZE", "END", timestamp)
+    except ImportError:
+        pass
 
 
 def add_status_to_window(status: CraneStatus):

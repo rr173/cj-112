@@ -15,6 +15,7 @@ from collision import (
     compute_crane_coords,
     check_collision_between,
     lock_crane,
+    unlock_crane_record,
 )
 from arbiter import (
     cranes_held_tokens,
@@ -29,6 +30,8 @@ from anomaly_detector import (
     is_crane_frozen,
     cranes_freeze_status,
 )
+from models import CraneStatusRecord
+from daily_report import add_status_report_to_history
 
 router = APIRouter(prefix="/api", tags=["塔吊状态"])
 
@@ -152,6 +155,15 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     status.timestamp = status.timestamp or time.time()
     cranes_current_status[status.crane_id] = status
 
+    history_record = CraneStatusRecord(
+        crane_id=status.crane_id,
+        rotation_angle=status.rotation_angle,
+        trolley_position=status.trolley_position,
+        hook_height=status.hook_height,
+        timestamp=status.timestamp,
+    )
+    add_status_report_to_history(history_record)
+
     background_tasks.add_task(process_status_report_async, status)
 
     triggered_alarms: List = []
@@ -194,8 +206,10 @@ def unlock_crane(crane_id: str):
         raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 不存在")
     lock = cranes_lock_status[crane_id]
     was_locked = lock.is_locked
-    lock.is_locked = False
     prev_reason = lock.locked_reason
+    if was_locked:
+        unlock_crane_record(crane_id)
+    lock.is_locked = False
     lock.locked_reason = None
     lock.locked_at = None
     return {

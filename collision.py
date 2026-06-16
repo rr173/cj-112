@@ -149,6 +149,20 @@ def lock_crane(crane_id: str, reason: str):
         cranes_lock_status[crane_id].is_locked = True
         cranes_lock_status[crane_id].locked_at = time.time()
         cranes_lock_status[crane_id].locked_reason = reason
+        try:
+            from daily_report import add_freeze_lock_record
+            add_freeze_lock_record(crane_id, "LOCK", "START", time.time(), reason)
+        except ImportError:
+            pass
+
+
+def unlock_crane_record(crane_id: str):
+    if crane_id in cranes_lock_status:
+        try:
+            from daily_report import add_freeze_lock_record
+            add_freeze_lock_record(crane_id, "LOCK", "END", time.time())
+        except ImportError:
+            pass
 
 
 def compute_bearing(from_x: float, from_y: float, to_x: float, to_y: float) -> float:

@@ -258,3 +258,88 @@ class CraneFreezeStatus(BaseModel):
     frozen_at: Optional[float] = None
     frozen_reason: Optional[str] = None
     unfreeze_at: Optional[float] = None
+
+
+class DailyReportStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class DailyReportDataStatus(str, Enum):
+    COMPLETE = "COMPLETE"
+    INCOMPLETE = "INCOMPLETE"
+
+
+class AlarmStats(BaseModel):
+    collision: int = 0
+    rotation_oscillation: int = 0
+    trolley_overspeed: int = 0
+    load_moment_warning: int = 0
+
+
+class FreezeLockStats(BaseModel):
+    freeze_count: int = 0
+    freeze_total_seconds: float = 0.0
+    lock_count: int = 0
+    lock_total_seconds: float = 0.0
+
+
+class TokenStats(BaseModel):
+    request_count: int = 0
+    queue_count: int = 0
+    avg_wait_seconds: float = 0.0
+
+
+class DailyReport(BaseModel):
+    report_id: str
+    crane_id: str
+    report_date: str
+    completed_orders: int = 0
+    total_lifts: int = 0
+    work_duration_seconds: float = 0.0
+    first_report_time: Optional[float] = None
+    last_report_time: Optional[float] = None
+    alarm_stats: AlarmStats = AlarmStats()
+    freeze_lock_stats: FreezeLockStats = FreezeLockStats()
+    token_stats: TokenStats = TokenStats()
+    data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
+    incomplete_orders: List[str] = []
+    remarks: str = ""
+    status: DailyReportStatus = DailyReportStatus.PENDING
+    approver: Optional[str] = None
+    approval_remarks: Optional[str] = None
+    approved_at: Optional[float] = None
+    generated_at: float
+    updated_at: float
+
+
+class DailyReportGenerateRequest(BaseModel):
+    date: Optional[str] = Field(default=None, description="生成日期 YYYY-MM-DD，默认当天")
+    crane_id: Optional[str] = Field(default=None, description="指定塔吊ID，不指定则生成所有塔吊")
+
+
+class DailyReportApproveRequest(BaseModel):
+    action: str = Field(description="审批动作: APPROVE 或 REJECT")
+    approver: str = Field(description="审批人")
+    remarks: Optional[str] = Field(default="", description="审批备注")
+
+
+class DailyReportSummaryItem(BaseModel):
+    crane_id: str
+    crane_name: str
+    total_reports: int
+    total_completed_orders: int
+    total_lifts: int
+    total_work_seconds: float
+    total_alarms: int
+    total_freezes: int
+    total_locks: int
+    total_token_requests: int
+    total_token_queues: int
+
+
+class DailyReportSummaryResponse(BaseModel):
+    start_date: str
+    end_date: str
+    summaries: List[DailyReportSummaryItem] = []
