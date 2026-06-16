@@ -20,7 +20,6 @@ from models import (
 from collision import cranes_config, alarm_history
 from arbiter import arb_event_logs
 from scheduler import work_orders
-from anomaly_detector import cranes_anomaly_events
 
 
 status_report_history: Dict[str, List[CraneStatusRecord]] = {}
@@ -105,26 +104,16 @@ def count_alarms(crane_id: str, start_ts: float, end_ts: float) -> AlarmStats:
     for alarm in alarm_history:
         if not (start_ts <= alarm.timestamp < end_ts):
             continue
-        if alarm.crane_a_id == crane_id or alarm.crane_b_id == crane_id:
-            if alarm.alarm_type == AlarmType.COLLISION:
+        if alarm.alarm_type == AlarmType.COLLISION:
+            if alarm.crane_a_id == crane_id or alarm.crane_b_id == crane_id:
                 stats.collision += 1
-            elif alarm.alarm_type == AlarmType.ROTATION_OSCILLATION:
-                stats.rotation_oscillation += 1
-            elif alarm.alarm_type == AlarmType.TROLLEY_OVERSPEED:
-                stats.trolley_overspeed += 1
-            elif alarm.alarm_type == AlarmType.LOAD_MOMENT_WARNING:
-                stats.load_moment_warning += 1
-
-    for event_list in cranes_anomaly_events.values():
-        for event in event_list:
-            if not (start_ts <= event.timestamp < end_ts):
-                continue
-            if event.crane_id == crane_id:
-                if event.alarm_type == AlarmType.ROTATION_OSCILLATION:
+        else:
+            if alarm.crane_a_id == crane_id:
+                if alarm.alarm_type == AlarmType.ROTATION_OSCILLATION:
                     stats.rotation_oscillation += 1
-                elif event.alarm_type == AlarmType.TROLLEY_OVERSPEED:
+                elif alarm.alarm_type == AlarmType.TROLLEY_OVERSPEED:
                     stats.trolley_overspeed += 1
-                elif event.alarm_type == AlarmType.LOAD_MOMENT_WARNING:
+                elif alarm.alarm_type == AlarmType.LOAD_MOMENT_WARNING:
                     stats.load_moment_warning += 1
 
     return stats
@@ -279,13 +268,16 @@ def generate_daily_reports(date_str: Optional[str] = None, crane_id: Optional[st
     crane_ids = [crane_id] if crane_id else list(cranes_config.keys())
 
     for cid in crane_ids:
-        report = generate_daily_report_for_crane(cid, target_date)
         report_key = f"{cid}_{target_date}"
+        existing_report = daily_reports.get(report_key)
+
+        if existing_report and existing_report.status == DailyReportStatus.APPROVED:
+            locked.append(cid)
+            continue
+
+        report = generate_daily_report_for_crane(cid, target_date)
         if report is None:
-            if report_key in daily_reports and daily_reports[report_key].status == DailyReportStatus.APPROVED:
-                locked.append(cid)
-            else:
-                skipped.append(cid)
+            skipped.append(cid)
         else:
             generated.append(report)
 

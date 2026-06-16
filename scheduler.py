@@ -274,6 +274,7 @@ def start_order(order_id: str) -> Dict:
 
     token_results = []
     acquired_sectors = []
+    queued_sectors = []
     failed_tokens = []
     for sec_id in sector_ids:
         try:
@@ -281,6 +282,9 @@ def start_order(order_id: str) -> Dict:
             token_results.append(result)
             if result.get("granted", False):
                 acquired_sectors.append(sec_id)
+            elif result.get("queued", False):
+                queued_sectors.append((sec_id, result.get("request_id")))
+                failed_tokens.append(sec_id)
             else:
                 failed_tokens.append(sec_id)
         except Exception as e:
@@ -291,6 +295,11 @@ def start_order(order_id: str) -> Dict:
         for sec_id in acquired_sectors:
             try:
                 release_token(crane_id, sec_id)
+            except Exception:
+                pass
+        for sec_id, req_id in queued_sectors:
+            try:
+                release_token(crane_id, sec_id, req_id)
             except Exception:
                 pass
         return {
