@@ -9,6 +9,7 @@ from models import (
     WorkOrderCreate,
     WorkOrderPriority,
     WorkOrderStatus,
+    PathDirection,
 )
 from collision import (
     cranes_config,
@@ -267,16 +268,32 @@ def start_order(order_id: str) -> Dict:
     if not config:
         return {"error": f"分配的塔吊 {crane_id} 不存在"}
 
-    lift_bearing = compute_bearing(config.tower_x, config.tower_y, order.lift_x, order.lift_y)
-    drop_bearing = compute_bearing(config.tower_x, config.tower_y, order.drop_x, order.drop_y)
+    from path_planner import rehearse_path_for_order, plan_path, active_path_plans, pending_rehearsal_results
 
-    sector_ids = find_sector_ids_for_crane_at_angles(crane_id, [lift_bearing, drop_bearing])
+    try:
+        rehearsal = rehearse_path_for_order(order_id)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    if rehearsal.has_conflict:
+        return {
+            "code": 2,
+            "message": "路径预演存在冲突，请选择路径方案后确认执行",
+            "rehearsal": rehearsal,
+            "order": order,
+        }
+
+    plan = active_path_plans.get(order_id)
+    if not plan:
+        return {"error": "路径规划失败，请重试"}
+
+    all_sector_ids = _collect_unique_sector_ids_from_plan(plan)
 
     token_results = []
     acquired_sectors = []
     queued_sectors = []
     failed_tokens = []
-    for sec_id in sector_ids:
+    for sec_id in all_sector_ids:
         try:
             result = request_token(crane_id, sec_id)
             token_results.append(result)
@@ -318,10 +335,101 @@ def start_order(order_id: str) -> Dict:
         crane_queues[crane_id].remove(order_id)
 
     return {
+        "code": 0,
         "order": order,
+        "path_plan": plan,
         "token_results": token_results,
-        "message": f"工单已开始执行，已成功获取 {len(acquired_sectors)} 个扇区令牌",
+        "message": f"工单已开始执行，路径方向: {plan.direction.value}，已成功获取 {len(acquired_sectors)} 个扇区令牌",
     }
+
+
+def confirm_and_start_order(order_id: str, direction: PathDirection) -> Dict:
+    order = work_orders.get(order_id)
+    if not order:
+        return {"error": f"工单 {order_id} 不存在"}
+    if order.status != WorkOrderStatus.ASSIGNED:
+        return {"error": f"只有已分配状态的工单可以确认执行，当前状态为 {order.status.value}"}
+    if not order.assigned_crane_id:
+        return {"error": "工单未分配塔吊"}
+
+    crane_id = order.assigned_crane_id
+    config = cranes_config.get(crane_id)
+    if not config:
+        return {"error": f"分配的塔吊 {crane_id} 不存在"}
+
+    from path_planner import plan_path, active_path_plans
+
+    plan = plan_path(
+        crane_id, order.lift_x, order.lift_y,
+        order.drop_x, order.drop_y,
+        direction, order_id,
+    )
+
+    all_sector_ids = _collect_unique_sector_ids_from_plan(plan)
+
+    token_results = []
+    acquired_sectors = []
+    queued_sectors = []
+    failed_tokens = []
+    for sec_id in all_sector_ids:
+        try:
+            result = request_token(crane_id, sec_id)
+            token_results.append(result)
+            if result.get("granted", False):
+                acquired_sectors.append(sec_id)
+            elif result.get("queued", False):
+                queued_sectors.append((sec_id, result.get("request_id")))
+                failed_tokens.append(sec_id)
+            else:
+                failed_tokens.append(sec_id)
+        except Exception as e:
+            failed_tokens.append(sec_id)
+            token_results.append({"sector_id": sec_id, "error": str(e), "granted": False})
+
+    if failed_tokens:
+        for sec_id in acquired_sectors:
+            try:
+                release_token(crane_id, sec_id)
+            except Exception:
+                pass
+        for sec_id, req_id in queued_sectors:
+            try:
+                release_token(crane_id, sec_id, req_id)
+            except Exception:
+                pass
+        return {
+            "error": f"无法获取所有必需的扇区令牌，失败扇区: {', '.join(failed_tokens)}",
+            "token_results": token_results,
+            "failed_sectors": failed_tokens,
+        }
+
+    now = time.time()
+    order.status = WorkOrderStatus.EXECUTING
+    order.started_at = now
+    order.updated_at = now
+    order.acquired_sectors = acquired_sectors
+
+    if order_id in crane_queues.get(crane_id, deque()):
+        crane_queues[crane_id].remove(order_id)
+
+    return {
+        "code": 0,
+        "order": order,
+        "path_plan": plan,
+        "token_results": token_results,
+        "message": f"工单已开始执行(确认路径)，路径方向: {direction.value}，已成功获取 {len(acquired_sectors)} 个扇区令牌",
+    }
+
+
+def _collect_unique_sector_ids_from_plan(plan) -> List[str]:
+    seen = set()
+    result = []
+    for seg in plan.segments:
+        for sid in seg.required_tokens:
+            if sid not in seen:
+                seen.add(sid)
+                result.append(sid)
+    return result
 
 
 def complete_order(order_id: str) -> Dict:
@@ -366,6 +474,13 @@ def complete_order(order_id: str) -> Dict:
         }
 
     now = time.time()
+
+    from path_planner import active_path_plans, record_path_execution
+    active_plan = active_path_plans.get(order_id)
+    execution_record = None
+    if active_plan and order.started_at:
+        execution_record = record_path_execution(order_id, active_plan, order.started_at, now)
+
     order.status = WorkOrderStatus.COMPLETED
     order.completed_at = now
     order.updated_at = now
@@ -375,11 +490,14 @@ def complete_order(order_id: str) -> Dict:
         _init_crane_queue(crane_id)
         crane_history[crane_id].append(order_id)
 
-    return {
+    result = {
         "order": order,
         "token_release_results": release_results,
         "message": "工单已完成，相关扇区令牌已释放",
     }
+    if execution_record:
+        result["execution_record"] = execution_record
+    return result
 
 
 def get_order(order_id: str) -> Optional[WorkOrder]:

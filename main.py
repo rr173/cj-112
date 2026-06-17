@@ -26,10 +26,12 @@ from routes_anomaly import router as anomaly_router
 from routes_report import router as report_router
 from routes_maintenance import router as maintenance_router
 from routes_operator import router as operator_router
+from routes_path import router as path_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
 from operator_training import init_operator_module
+from path_planner import init_path_planner
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -40,6 +42,7 @@ app.include_router(anomaly_router)
 app.include_router(report_router)
 app.include_router(maintenance_router)
 app.include_router(operator_router)
+app.include_router(path_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -151,6 +154,7 @@ def init_cranes():
     init_daily_report_module()
     init_maintenance_module()
     init_operator_module()
+    init_path_planner()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():

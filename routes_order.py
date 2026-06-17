@@ -6,6 +6,7 @@ from models import (
     WorkOrderCreate,
     WorkOrderManualAssign,
     WorkOrderStatus,
+    PathPlanConfirmRequest,
 )
 from collision import cranes_config
 from scheduler import (
@@ -14,6 +15,7 @@ from scheduler import (
     cancel_order,
     reassign_order,
     start_order,
+    confirm_and_start_order,
     complete_order,
     get_order,
     get_crane_queue,
@@ -84,15 +86,37 @@ def api_reassign_order(order_id: str):
     }
 
 
-@router.post("/{order_id}/start", summary="标记工单开始执行")
+@router.post("/{order_id}/start", summary="标记工单开始执行(自动路径规划)")
 def api_start_order(order_id: str):
     result = start_order(order_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    if result.get("code") == 2:
+        return {
+            "code": 2,
+            "message": result["message"],
+            "rehearsal": result["rehearsal"],
+            "order": result["order"],
+        }
+    return {
+        "code": 0,
+        "message": result["message"],
+        "order": result["order"],
+        "path_plan": result.get("path_plan"),
+        "token_results": result.get("token_results", []),
+    }
+
+
+@router.post("/{order_id}/confirm-path", summary="确认路径方案并开始执行")
+def api_confirm_path(order_id: str, req: PathPlanConfirmRequest):
+    result = confirm_and_start_order(order_id, req.direction)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return {
         "code": 0,
         "message": result["message"],
         "order": result["order"],
+        "path_plan": result.get("path_plan"),
         "token_results": result.get("token_results", []),
     }
 

@@ -560,3 +560,77 @@ class OperatorQualificationStatus(BaseModel):
     qualification_expiry: Optional[float] = None
     bound_crane_id: Optional[str] = None
     arm_length_limit: Optional[float] = Field(default=None, description="可操作臂长上限(米), None表示不限")
+
+
+class PathDirection(str, Enum):
+    CW = "CW"
+    CCW = "CCW"
+
+
+class PathSegmentStatus(str, Enum):
+    CLEAR = "CLEAR"
+    CONFLICT = "CONFLICT"
+    UNREACHABLE = "UNREACHABLE"
+
+
+class PathSegment(BaseModel):
+    segment_index: int
+    start_angle: float = Field(description="段起始角度(度)")
+    end_angle: float = Field(description="段结束角度(度)")
+    sector_ids: List[str] = Field(default=[], description="途经重叠扇区ID列表")
+    required_tokens: List[str] = Field(default=[], description="需要申请的令牌(扇区ID)列表")
+    estimated_time_seconds: float = Field(description="预估通过时间(秒)")
+
+
+class PathPlan(BaseModel):
+    plan_id: str
+    order_id: str
+    crane_id: str
+    lift_angle: float = Field(description="起吊点方位角(度)")
+    drop_angle: float = Field(description="落点方位角(度)")
+    direction: PathDirection
+    segments: List[PathSegment] = []
+    total_estimated_time: float = Field(description="总预估通过时间(秒)")
+    angular_distance: float = Field(description="回转角度距离(度)")
+    created_at: float
+
+
+class PathSegmentRehearsal(BaseModel):
+    segment_index: int
+    start_angle: float
+    end_angle: float
+    sector_ids: List[str] = []
+    required_tokens: List[str] = []
+    estimated_time_seconds: float
+    status: PathSegmentStatus
+    conflict_token_holder: Optional[str] = None
+    estimated_wait_seconds: float = 0.0
+
+
+class PathRehearsalResult(BaseModel):
+    order_id: str
+    crane_id: str
+    main_path: List[PathSegmentRehearsal] = []
+    main_path_total_time: float = Field(description="主路径预估总耗时(秒,含等待)")
+    has_conflict: bool
+    alternative_path: Optional[List[PathSegmentRehearsal]] = None
+    alternative_direction: Optional[PathDirection] = None
+    alternative_path_total_time: Optional[float] = None
+
+
+class PathExecutionRecord(BaseModel):
+    record_id: str
+    plan_id: str
+    order_id: str
+    crane_id: str
+    direction: PathDirection
+    estimated_total_time: float
+    actual_total_time: float
+    deviation_seconds: float
+    segment_count: int
+    executed_at: float
+    completed_at: float
+
+
+class PathPlanConfirmRequest(BaseModel):
+    direction: PathDirection = Field(description="选择的路径方向: CW(主路径) 或 CCW(备选路径)")
