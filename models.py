@@ -320,6 +320,15 @@ class TokenStats(BaseModel):
     avg_wait_seconds: float = 0.0
 
 
+class InspectionDailyStats(BaseModel):
+    inspection_completed: bool = False
+    inspection_report_id: Optional[str] = None
+    inspector: Optional[str] = None
+    inspection_time: Optional[float] = None
+    hazards_found: int = 0
+    overdue_hazards: int = 0
+
+
 class DailyReport(BaseModel):
     report_id: str
     crane_id: str
@@ -756,12 +765,3 @@ class CraneHazardStats(BaseModel):
     closed_count: int = 0
     overdue_count: int = 0
     avg_close_hours: float = 0.0
-
-
-class InspectionDailyStats(BaseModel):
-    inspection_completed: bool = False
-    inspection_report_id: Optional[str] = None
-    inspector: Optional[str] = None
-    inspection_time: Optional[float] = None
-    hazards_found: int = 0
-    overdue_hazards: int = 0
