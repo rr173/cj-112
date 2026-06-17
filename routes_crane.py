@@ -49,6 +49,22 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     except ImportError:
         in_maintenance = False
 
+    if not in_maintenance:
+        try:
+            from operator_training import validate_crane_operator_for_status_report
+            operator_check = validate_crane_operator_for_status_report(status.crane_id)
+            if operator_check and not operator_check.get("valid"):
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "message": operator_check["reason"],
+                        "code": "NO_QUALIFIED_OPERATOR",
+                        "crane_id": status.crane_id,
+                    }
+                )
+        except ImportError:
+            pass
+
     lock = cranes_lock_status.get(status.crane_id)
     if lock and lock.is_locked:
         raise HTTPException(

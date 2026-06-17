@@ -450,3 +450,113 @@ class MaintenanceWindowQuery(BaseModel):
     maintenance_type: Optional[MaintenanceType] = Field(default=None, description="按维保类型筛选")
     start_from: Optional[float] = Field(default=None, description="窗口开始时间下限")
     end_before: Optional[float] = Field(default=None, description="窗口结束时间上限")
+
+
+class OperatorGrade(str, Enum):
+    PRIMARY = "PRIMARY"
+    INTERMEDIATE = "INTERMEDIATE"
+    ADVANCED = "ADVANCED"
+
+
+GRADE_ARM_LENGTH_LIMITS: Dict[OperatorGrade, Optional[float]] = {
+    OperatorGrade.PRIMARY: 50.0,
+    OperatorGrade.INTERMEDIATE: 60.0,
+    OperatorGrade.ADVANCED: None,
+}
+
+ASSESSMENT_PASSING_SCORE = 60
+ASSESSMENT_FULL_SCORE = 100
+ASSESSMENT_VALIDITY_MONTHS = 6
+
+
+class OperatorCreate(BaseModel):
+    name: str = Field(description="操作员姓名")
+    grade: OperatorGrade = Field(description="资质等级: PRIMARY/INTERMEDIATE/ADVANCED")
+    phone: Optional[str] = Field(default=None, description="联系电话")
+    id_number: Optional[str] = Field(default=None, description="身份证号")
+
+
+class OperatorUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, description="操作员姓名")
+    grade: Optional[OperatorGrade] = Field(default=None, description="资质等级")
+    phone: Optional[str] = Field(default=None, description="联系电话")
+    id_number: Optional[str] = Field(default=None, description="身份证号")
+
+
+class Operator(BaseModel):
+    operator_id: str
+    name: str
+    grade: OperatorGrade
+    phone: Optional[str] = None
+    id_number: Optional[str] = None
+    created_at: float
+    updated_at: float
+
+
+class AssessmentRecord(BaseModel):
+    assessment_id: str
+    operator_id: str
+    score: int = Field(ge=0, le=100, description="考核分数(0-100)")
+    passed: bool
+    assessed_at: float
+    valid_until: Optional[float] = None
+    assessor: Optional[str] = None
+    remarks: str = ""
+
+
+class AssessmentCreate(BaseModel):
+    score: int = Field(ge=0, le=100, description="考核分数(0-100)")
+    assessor: Optional[str] = Field(default=None, description="考核人")
+    remarks: Optional[str] = Field(default="", description="备注")
+
+
+class CraneOperatorBinding(BaseModel):
+    crane_id: str
+    operator_id: str
+    bound_at: float
+    unbound_at: Optional[float] = None
+    is_active: bool = True
+
+
+class OperatorBindRequest(BaseModel):
+    operator_id: str = Field(description="操作员ID")
+
+
+class ShiftHandoverRequest(BaseModel):
+    from_operator_id: str = Field(description="交班操作员ID")
+    to_operator_id: str = Field(description="接班操作员ID")
+    remarks: Optional[str] = Field(default="", description="交接备注(有未完成工单或未解除告警时必填)")
+
+
+class ShiftHandoverRecord(BaseModel):
+    handover_id: str
+    crane_id: str
+    from_operator_id: str
+    to_operator_id: str
+    from_operator_name: str
+    to_operator_name: str
+    has_pending_orders: bool
+    has_unresolved_alarms: bool
+    pending_order_ids: List[str] = []
+    unresolved_alarm_ids: List[str] = []
+    remarks: str
+    handed_over_at: float
+
+
+class OperatorAttendanceSegment(BaseModel):
+    operator_id: str
+    operator_name: str
+    start_time: float
+    end_time: Optional[float] = None
+    is_current: bool = False
+
+
+class OperatorQualificationStatus(BaseModel):
+    operator_id: str
+    operator_name: str
+    grade: OperatorGrade
+    is_qualified: bool
+    latest_assessment: Optional[AssessmentRecord] = None
+    qualification_expiry: Optional[float] = None
+    bound_crane_id: Optional[str] = None
+    arm_length_limit: Optional[float] = Field(default=None, description="可操作臂长上限(米), None表示不限")

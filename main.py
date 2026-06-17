@@ -25,9 +25,11 @@ from routes_order import router as order_router
 from routes_anomaly import router as anomaly_router
 from routes_report import router as report_router
 from routes_maintenance import router as maintenance_router
+from routes_operator import router as operator_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
+from operator_training import init_operator_module
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -37,6 +39,7 @@ app.include_router(order_router)
 app.include_router(anomaly_router)
 app.include_router(report_router)
 app.include_router(maintenance_router)
+app.include_router(operator_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -147,6 +150,7 @@ def init_cranes():
     init_anomaly_detector()
     init_daily_report_module()
     init_maintenance_module()
+    init_operator_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -186,6 +190,12 @@ def health_check():
         MaintenanceStatus,
         check_all_windows,
     )
+    from operator_training import (
+        operators as _operators,
+        assessment_records as _assessment_records,
+        crane_operator_bindings as _crane_operator_bindings,
+        shift_handover_records as _shift_handover_records,
+    )
     refresh_all_freeze_status()
     check_all_windows()
     total_anomaly_events = sum(len(events) for events in cranes_anomaly_events.values())
@@ -211,6 +221,18 @@ def health_check():
     abnormal_m = sum(1 for w in maintenance_windows.values() if w.status == MaintenanceStatus.ABNORMAL)
     active_m = sum(1 for w in maintenance_windows.values() if w.is_active)
     total_m_alarms = len(maintenance_alarms)
+
+    total_operators = len(_operators)
+    qualified_operators = 0
+    from models import OperatorGrade
+    for op in _operators.values():
+        from operator_training import get_operator_qualification
+        q = get_operator_qualification(op.operator_id)
+        if q.get("is_qualified"):
+            qualified_operators += 1
+    active_bindings = sum(1 for b in _crane_operator_bindings.values() if b.is_active)
+    total_assessments = len(_assessment_records)
+    total_handovers = len(_shift_handover_records)
 
     return {
         "status": "ok",
@@ -245,5 +267,12 @@ def health_check():
             "total_maintenance_alarms": total_m_alarms,
         },
         "total_status_history_records": total_status_records,
+        "operator_stats": {
+            "total_operators": total_operators,
+            "qualified_operators": qualified_operators,
+            "active_bindings": active_bindings,
+            "total_assessments": total_assessments,
+            "total_handovers": total_handovers,
+        },
         "timestamp": time.time(),
     }
