@@ -120,7 +120,14 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     add_status_to_window(status)
 
     if in_maintenance:
-        return {
+        try:
+            from inspection import check_overdue_hazards, get_crane_overdue_hazard_warnings
+            check_overdue_hazards()
+            overdue_warnings = get_crane_overdue_hazard_warnings(status.crane_id)
+        except ImportError:
+            overdue_warnings = []
+
+        response = {
             "code": 0,
             "message": "状态上报成功（维保停机模式：已记录，已跳过碰撞检测和异常检测）",
             "crane_id": status.crane_id,
@@ -130,6 +137,10 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
             "alarms_triggered": 0,
             "alarm_details": [],
         }
+        if overdue_warnings:
+            response["overdue_hazard_warnings"] = overdue_warnings
+            response["message"] = f"状态上报成功（维保停机模式：已记录，已跳过碰撞检测和异常检测）。注意：存在 {len(overdue_warnings)} 条超期未关闭隐患"
+        return response
 
     rotation = normalize_angle(status.rotation_angle)
     sectors_in = find_sectors_for_crane_and_angle(status.crane_id, rotation)
@@ -219,9 +230,20 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
                 lock_crane(status.crane_id, f"与塔吊{other_id}距离过近触发防碰撞锁定")
                 lock_crane(other_id, f"与塔吊{status.crane_id}距离过近触发防碰撞锁定")
 
-    return {
+    try:
+        from inspection import check_overdue_hazards, get_crane_overdue_hazard_warnings
+        check_overdue_hazards()
+        overdue_warnings = get_crane_overdue_hazard_warnings(status.crane_id)
+    except ImportError:
+        overdue_warnings = []
+
+    message = "状态上报成功"
+    if overdue_warnings:
+        message = f"状态上报成功。注意：存在 {len(overdue_warnings)} 条超期未关闭隐患"
+
+    response = {
         "code": 0,
-        "message": "状态上报成功",
+        "message": message,
         "crane_id": status.crane_id,
         "maintenance_mode": False,
         "locked": cranes_lock_status[status.crane_id].is_locked if status.crane_id in cranes_lock_status else False,
@@ -236,6 +258,9 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         "alarms_triggered": len(triggered_alarms),
         "alarm_details": triggered_alarms,
     }
+    if overdue_warnings:
+        response["overdue_hazard_warnings"] = overdue_warnings
+    return response
 
 
 @router.post("/crane/{crane_id}/unlock", summary="人工解除塔吊锁定")

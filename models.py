@@ -333,6 +333,7 @@ class DailyReport(BaseModel):
     freeze_lock_stats: FreezeLockStats = FreezeLockStats()
     token_stats: TokenStats = TokenStats()
     maintenance_stats: MaintenanceDailyStats = MaintenanceDailyStats()
+    inspection_stats: InspectionDailyStats = InspectionDailyStats()
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
@@ -634,3 +635,133 @@ class PathExecutionRecord(BaseModel):
 
 class PathPlanConfirmRequest(BaseModel):
     direction: PathDirection = Field(description="选择的路径方向: CW(主路径) 或 CCW(备选路径)")
+
+
+class InspectionItemResult(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    OBSERVE = "OBSERVE"
+
+
+class HazardSeverity(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class HazardStatus(str, Enum):
+    PENDING_RECTIFICATION = "PENDING_RECTIFICATION"
+    RECTIFYING = "RECTIFYING"
+    PENDING_REVIEW = "PENDING_REVIEW"
+    CLOSED = "CLOSED"
+
+
+class StandardInspectionItem(BaseModel):
+    item_id: str
+    item_name: str
+    category: str
+    description: str
+    default_severity: HazardSeverity = HazardSeverity.MEDIUM
+
+
+class InspectionItemEntry(BaseModel):
+    item_id: str
+    result: InspectionItemResult
+    remark: Optional[str] = Field(default="", description="备注说明")
+
+
+class InspectionReportCreate(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    inspector: str = Field(description="巡检人")
+    items: List[InspectionItemEntry] = Field(description="逐项检查结果")
+    remark: Optional[str] = Field(default="", description="巡检总体备注")
+
+
+class InspectionReport(BaseModel):
+    report_id: str
+    crane_id: str
+    crane_name: str
+    inspector: str
+    inspection_time: float
+    inspection_date: str
+    items: List[InspectionItemEntry]
+    total_items: int
+    pass_count: int
+    fail_count: int
+    observe_count: int
+    remark: str
+    created_at: float
+
+
+class HazardCreate(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    source_report_id: str = Field(description="来源巡检报告ID")
+    item_id: str = Field(description="关联检查项ID")
+    item_name: str = Field(description="检查项名称")
+    description: str = Field(description="隐患描述")
+    severity: HazardSeverity = Field(default=HazardSeverity.MEDIUM, description="严重程度")
+    responsible_person: str = Field(description="整改责任人")
+    deadline: Optional[float] = Field(default=None, description="整改期限(Unix时间戳, 默认48小时)")
+
+
+class Hazard(BaseModel):
+    hazard_id: str
+    crane_id: str
+    crane_name: str
+    source_report_id: str
+    item_id: str
+    item_name: str
+    description: str
+    severity: HazardSeverity
+    status: HazardStatus
+    responsible_person: str
+    deadline: float
+    created_at: float
+    updated_at: float
+    accepted_at: Optional[float] = None
+    rectification_remark: Optional[str] = None
+    rectification_submitted_at: Optional[float] = None
+    review_result: Optional[bool] = None
+    review_remark: Optional[str] = None
+    reviewed_at: Optional[float] = None
+    reject_reason: Optional[str] = None
+    reject_count: int = 0
+    is_overdue: bool = False
+    overdue_alarm_generated: bool = False
+
+
+class HazardAcceptRequest(BaseModel):
+    responsible_person: str = Field(description="责任人确认")
+
+
+class HazardSubmitRequest(BaseModel):
+    rectification_remark: str = Field(description="整改说明")
+
+
+class HazardReviewRequest(BaseModel):
+    reviewer: str = Field(description="复查人")
+    passed: bool = Field(description="复查是否通过")
+    review_remark: Optional[str] = Field(default="", description="复查备注")
+    reject_reason: Optional[str] = Field(default="", description="打回原因(复查不通过时必填)")
+
+
+class CraneHazardStats(BaseModel):
+    crane_id: str
+    crane_name: str
+    total_hazards: int = 0
+    pending_count: int = 0
+    rectifying_count: int = 0
+    review_count: int = 0
+    closed_count: int = 0
+    overdue_count: int = 0
+    avg_close_hours: float = 0.0
+
+
+class InspectionDailyStats(BaseModel):
+    inspection_completed: bool = False
+    inspection_report_id: Optional[str] = None
+    inspector: Optional[str] = None
+    inspection_time: Optional[float] = None
+    hazards_found: int = 0
+    overdue_hazards: int = 0

@@ -27,11 +27,13 @@ from routes_report import router as report_router
 from routes_maintenance import router as maintenance_router
 from routes_operator import router as operator_router
 from routes_path import router as path_router
+from routes_inspection import router as inspection_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
 from operator_training import init_operator_module
 from path_planner import init_path_planner
+from inspection import init_inspection_module, check_overdue_hazards
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -43,10 +45,12 @@ app.include_router(report_router)
 app.include_router(maintenance_router)
 app.include_router(operator_router)
 app.include_router(path_router)
+app.include_router(inspection_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
 _maintenance_scheduler_thread: threading.Thread = None
+_inspection_scheduler_thread: threading.Thread = None
 _scheduler_running = False
 
 
@@ -97,6 +101,21 @@ def _maintenance_scheduler_loop():
             print(f"[维保定时任务] 执行异常: {e}")
 
         time.sleep(30)
+
+
+def _inspection_scheduler_loop():
+    global _scheduler_running
+    _scheduler_running = True
+    while _scheduler_running:
+        try:
+            overdue = check_overdue_hazards()
+            if overdue:
+                for h in overdue:
+                    print(f"[巡检定时任务] 隐患超期告警: 塔吊 {h.crane_id} - {h.item_name}, 隐患ID: {h.hazard_id}, 责任人: {h.responsible_person}, 已超期 {round((time.time() - h.deadline)/3600, 1)} 小时")
+        except Exception as e:
+            print(f"[巡检定时任务] 超期检查异常: {e}")
+
+        time.sleep(300)
 
 
 @app.on_event("startup")
@@ -155,6 +174,7 @@ def init_cranes():
     init_maintenance_module()
     init_operator_module()
     init_path_planner()
+    init_inspection_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -167,6 +187,12 @@ def init_cranes():
         _maintenance_scheduler_thread = threading.Thread(target=_maintenance_scheduler_loop, daemon=True)
         _maintenance_scheduler_thread.start()
         print("[维保定时任务] 已启动，每30秒检查维保窗口状态，每小时检查维保到期提醒")
+
+    global _inspection_scheduler_thread
+    if _inspection_scheduler_thread is None or not _inspection_scheduler_thread.is_alive():
+        _inspection_scheduler_thread = threading.Thread(target=_inspection_scheduler_loop, daemon=True)
+        _inspection_scheduler_thread.start()
+        print("[巡检定时任务] 已启动，每5分钟检查一次隐患超期情况")
 
 
 @app.on_event("shutdown")
@@ -200,8 +226,14 @@ def health_check():
         crane_operator_bindings as _crane_operator_bindings,
         shift_handover_records as _shift_handover_records,
     )
+    from inspection import (
+        inspection_reports as _inspection_reports,
+        hazards as _hazards,
+        HazardStatus as _HazardStatus,
+    )
     refresh_all_freeze_status()
     check_all_windows()
+    check_overdue_hazards()
     total_anomaly_events = sum(len(events) for events in cranes_anomaly_events.values())
     frozen_cranes = sum(1 for f in cranes_freeze_status.values() if f.is_frozen)
     total_window_records = sum(len(w) for w in cranes_sliding_window.values())
@@ -237,6 +269,14 @@ def health_check():
     active_bindings = sum(1 for b in _crane_operator_bindings.values() if b.is_active)
     total_assessments = len(_assessment_records)
     total_handovers = len(_shift_handover_records)
+
+    total_inspection_reports = len(_inspection_reports)
+    total_hazards = len(_hazards)
+    pending_hazards = sum(1 for h in _hazards.values() if h.status == _HazardStatus.PENDING_RECTIFICATION)
+    rectifying_hazards = sum(1 for h in _hazards.values() if h.status == _HazardStatus.RECTIFYING)
+    review_hazards = sum(1 for h in _hazards.values() if h.status == _HazardStatus.PENDING_REVIEW)
+    closed_hazards = sum(1 for h in _hazards.values() if h.status == _HazardStatus.CLOSED)
+    overdue_hazards = sum(1 for h in _hazards.values() if h.is_overdue)
 
     return {
         "status": "ok",
@@ -277,6 +317,15 @@ def health_check():
             "active_bindings": active_bindings,
             "total_assessments": total_assessments,
             "total_handovers": total_handovers,
+        },
+        "inspection_stats": {
+            "total_inspection_reports": total_inspection_reports,
+            "total_hazards": total_hazards,
+            "pending_hazards": pending_hazards,
+            "rectifying_hazards": rectifying_hazards,
+            "review_hazards": review_hazards,
+            "closed_hazards": closed_hazards,
+            "overdue_hazards": overdue_hazards,
         },
         "timestamp": time.time(),
     }

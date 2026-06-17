@@ -225,6 +225,14 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         from models import MaintenanceDailyStats
         maintenance_stats = MaintenanceDailyStats()
 
+    try:
+        from inspection import get_inspection_daily_stats, check_overdue_hazards
+        check_overdue_hazards()
+        inspection_stats = get_inspection_daily_stats(crane_id, start_ts, end_ts)
+    except ImportError:
+        from models import InspectionDailyStats
+        inspection_stats = InspectionDailyStats()
+
     work_duration = 0.0
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
@@ -239,6 +247,17 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         if remarks:
             remarks += " | "
         remarks += f"当日处于维保期，维保类型: {maintenance_stats.maintenance_type.value if maintenance_stats.maintenance_type else '未知'}"
+
+    if inspection_stats.inspection_completed:
+        if remarks:
+            remarks += " | "
+        remarks += f"当日已完成巡检，发现隐患{inspection_stats.hazards_found}项"
+        if inspection_stats.overdue_hazards > 0:
+            remarks += f"，存在超期隐患{inspection_stats.overdue_hazards}项"
+    else:
+        if remarks:
+            remarks += " | "
+        remarks += "当日未完成安全巡检"
 
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
@@ -260,6 +279,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         freeze_lock_stats=freeze_lock_stats,
         token_stats=token_stats,
         maintenance_stats=maintenance_stats,
+        inspection_stats=inspection_stats,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,
