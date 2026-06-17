@@ -351,6 +351,14 @@ def shift_handover(crane_id: str, from_operator_id: str, to_operator_id: str, re
     if not check["can_operate"]:
         return {"error": f"接班操作员无法操作该塔吊: {check['reason']}"}
 
+    to_existing_crane = operator_crane_bindings.get(to_operator_id)
+    if to_existing_crane:
+        to_operator = operators.get(to_operator_id)
+        to_name = to_operator.name if to_operator else to_operator_id
+        return {
+            "error": f"接班操作员 {to_name} 当前已绑定塔吊 {to_existing_crane}, 请先解绑后再进行交接",
+        }
+
     has_pending_orders, pending_order_ids = _check_pending_orders(crane_id)
     has_unresolved_alarms, unresolved_alarm_ids = _check_unresolved_alarms(crane_id)
 
@@ -428,20 +436,26 @@ def _check_pending_orders(crane_id: str) -> tuple:
 
 def _check_unresolved_alarms(crane_id: str) -> tuple:
     try:
-        from collision import cranes_lock_status, alarm_history
+        from collision import cranes_lock_status
         unresolved = []
         lock = cranes_lock_status.get(crane_id)
         if lock and lock.is_locked:
-            unresolved.append(f"LOCK-{crane_id}")
+            unresolved.append(f"LOCK-{crane_id}-{lock.locked_reason or 'unknown'}")
         try:
             from anomaly_detector import cranes_freeze_status
             freeze = cranes_freeze_status.get(crane_id)
             if freeze and freeze.is_frozen:
-                unresolved.append(f"FREEZE-{crane_id}")
+                unresolved.append(f"FREEZE-{crane_id}-{freeze.frozen_reason or 'unknown'}")
         except ImportError:
             pass
-        recent_alarms = [a for a in alarm_history if a.crane_a_id == crane_id or a.crane_b_id == crane_id]
-        unresolved.extend([a.alarm_id for a in recent_alarms[-10:]])
+        try:
+            from anomaly_detector import cranes_anomaly_events
+            for events in cranes_anomaly_events.values():
+                for ev in events:
+                    if not ev.resolved and (ev.crane_id == crane_id):
+                        unresolved.append(ev.event_id)
+        except ImportError:
+            pass
         return len(unresolved) > 0, unresolved
     except ImportError:
         return False, []
@@ -463,10 +477,18 @@ def get_crane_attendance_timeline(crane_id: str, date: Optional[str] = None) -> 
     day_end = target_date.replace(hour=23, minute=59, second=59, microsecond=999999).timestamp()
 
     segments = attendance_segments.get(crane_id, [])
+    now = time.time()
     day_segments = []
     for seg in segments:
-        if seg.start_time <= day_end and (seg.end_time is None or seg.end_time >= day_start):
+        if seg.end_time is None:
+            if seg.start_time > day_end:
+                continue
+            if day_start > now:
+                continue
             day_segments.append(seg)
+        else:
+            if seg.start_time <= day_end and seg.end_time >= day_start:
+                day_segments.append(seg)
 
     return {
         "crane_id": crane_id,
