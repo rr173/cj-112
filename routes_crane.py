@@ -29,6 +29,7 @@ from anomaly_detector import (
     process_status_report_async,
     is_crane_frozen,
     cranes_freeze_status,
+    add_status_to_window,
 )
 from models import CraneStatusRecord
 from daily_report import add_status_report_to_history
@@ -40,6 +41,13 @@ router = APIRouter(prefix="/api", tags=["塔吊状态"])
 def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     if status.crane_id not in cranes_config:
         raise HTTPException(status_code=404, detail=f"塔吊 {status.crane_id} 不存在")
+
+    try:
+        from maintenance import check_all_windows, is_crane_in_maintenance, increment_suppressed_alarm
+        check_all_windows()
+        in_maintenance = is_crane_in_maintenance(status.crane_id)
+    except ImportError:
+        in_maintenance = False
 
     lock = cranes_lock_status.get(status.crane_id)
     if lock and lock.is_locked:
@@ -81,6 +89,31 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="吊钩高度不能为负数")
 
     clean_expired_tokens_and_waiters()
+
+    status.timestamp = status.timestamp or time.time()
+    cranes_current_status[status.crane_id] = status
+
+    history_record = CraneStatusRecord(
+        crane_id=status.crane_id,
+        rotation_angle=status.rotation_angle,
+        trolley_position=status.trolley_position,
+        hook_height=status.hook_height,
+        timestamp=status.timestamp,
+    )
+    add_status_report_to_history(history_record)
+    add_status_to_window(status)
+
+    if in_maintenance:
+        return {
+            "code": 0,
+            "message": "状态上报成功（维保停机模式：已记录，已跳过碰撞检测和异常检测）",
+            "crane_id": status.crane_id,
+            "maintenance_mode": True,
+            "locked": cranes_lock_status[status.crane_id].is_locked if status.crane_id in cranes_lock_status else False,
+            "overlap_sectors_entered": [],
+            "alarms_triggered": 0,
+            "alarm_details": [],
+        }
 
     rotation = normalize_angle(status.rotation_angle)
     sectors_in = find_sectors_for_crane_and_angle(status.crane_id, rotation)
@@ -152,18 +185,6 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
                         }
                     )
 
-    status.timestamp = status.timestamp or time.time()
-    cranes_current_status[status.crane_id] = status
-
-    history_record = CraneStatusRecord(
-        crane_id=status.crane_id,
-        rotation_angle=status.rotation_angle,
-        trolley_position=status.trolley_position,
-        hook_height=status.hook_height,
-        timestamp=status.timestamp,
-    )
-    add_status_report_to_history(history_record)
-
     background_tasks.add_task(process_status_report_async, status)
 
     triggered_alarms: List = []
@@ -186,6 +207,7 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         "code": 0,
         "message": "状态上报成功",
         "crane_id": status.crane_id,
+        "maintenance_mode": False,
         "locked": cranes_lock_status[status.crane_id].is_locked if status.crane_id in cranes_lock_status else False,
         "overlap_sectors_entered": [
             {

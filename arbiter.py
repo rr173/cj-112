@@ -235,6 +235,22 @@ def request_token(crane_id: str, sector_id: str) -> Dict:
     if crane_id not in (sector.crane_a_id, sector.crane_b_id):
         raise HTTPException(status_code=400, detail=f"塔吊 {crane_id} 不属于扇区 {sector_id}")
 
+    try:
+        from maintenance import check_all_windows, is_crane_in_maintenance
+        check_all_windows()
+        if is_crane_in_maintenance(crane_id):
+            return {
+                "granted": False,
+                "request_id": None,
+                "sector_id": sector_id,
+                "crane_id": crane_id,
+                "queued": False,
+                "message": "塔吊处于维保停机中，令牌申请已被拒绝",
+                "code": "MAINTENANCE_SHUTDOWN",
+            }
+    except ImportError:
+        pass
+
     ts = token_statuses[sector_id]
 
     if ts.holder_crane_id == crane_id:

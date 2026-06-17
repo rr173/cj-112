@@ -479,6 +479,14 @@ def process_status_report(status: CraneStatus):
     if is_crane_frozen(status.crane_id):
         return
 
+    try:
+        from maintenance import check_all_windows, is_crane_in_maintenance
+        check_all_windows()
+        if is_crane_in_maintenance(status.crane_id):
+            return
+    except ImportError:
+        pass
+
     add_status_to_window(status)
     detect_anomalies(status.crane_id)
 

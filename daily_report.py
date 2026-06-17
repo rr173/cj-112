@@ -218,6 +218,13 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
     freeze_lock_stats = count_freeze_lock(crane_id, start_ts, end_ts)
     token_stats = count_token_usage(crane_id, start_ts, end_ts)
 
+    try:
+        from maintenance import get_maintenance_daily_stats
+        maintenance_stats = get_maintenance_daily_stats(crane_id, start_ts, end_ts)
+    except ImportError:
+        from models import MaintenanceDailyStats
+        maintenance_stats = MaintenanceDailyStats()
+
     work_duration = 0.0
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
@@ -227,6 +234,11 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
     if incomplete_orders:
         data_status = DailyReportDataStatus.INCOMPLETE
         remarks = f"存在未完成工单: {', '.join(incomplete_orders)}"
+
+    if maintenance_stats.in_maintenance_period:
+        if remarks:
+            remarks += " | "
+        remarks += f"当日处于维保期，维保类型: {maintenance_stats.maintenance_type.value if maintenance_stats.maintenance_type else '未知'}"
 
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
@@ -247,6 +259,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         alarm_stats=alarm_stats,
         freeze_lock_stats=freeze_lock_stats,
         token_stats=token_stats,
+        maintenance_stats=maintenance_stats,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,

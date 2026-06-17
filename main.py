@@ -24,8 +24,10 @@ from routes_arb import router as arb_router
 from routes_order import router as order_router
 from routes_anomaly import router as anomaly_router
 from routes_report import router as report_router
+from routes_maintenance import router as maintenance_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
+from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -34,9 +36,11 @@ app.include_router(arb_router)
 app.include_router(order_router)
 app.include_router(anomaly_router)
 app.include_router(report_router)
+app.include_router(maintenance_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
+_maintenance_scheduler_thread: threading.Thread = None
 _scheduler_running = False
 
 
@@ -66,6 +70,27 @@ def _daily_report_scheduler_loop():
             except Exception as e:
                 print(f"[日报定时任务] 自动生成日报失败: {e}")
             time.sleep(60)
+
+
+def _maintenance_scheduler_loop():
+    global _scheduler_running
+    _scheduler_running = True
+    last_due_check = 0.0
+    while _scheduler_running:
+        try:
+            updated = check_all_windows()
+            if updated:
+                for w in updated:
+                    print(f"[维保定时任务] 塔吊 {w.crane_id} 维保窗口状态变更: {w.status.value}, 窗口ID: {w.window_id}")
+
+            now = time.time()
+            if now - last_due_check >= 3600:
+                check_due_soon_alarms()
+                last_due_check = now
+        except Exception as e:
+            print(f"[维保定时任务] 执行异常: {e}")
+
+        time.sleep(30)
 
 
 @app.on_event("startup")
@@ -121,6 +146,7 @@ def init_cranes():
     rebuild_all_overlap_sectors()
     init_anomaly_detector()
     init_daily_report_module()
+    init_maintenance_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -128,12 +154,18 @@ def init_cranes():
         _daily_report_scheduler_thread.start()
         print("[日报定时任务] 已启动，每天 23:50 自动生成当日日报")
 
+    global _maintenance_scheduler_thread
+    if _maintenance_scheduler_thread is None or not _maintenance_scheduler_thread.is_alive():
+        _maintenance_scheduler_thread = threading.Thread(target=_maintenance_scheduler_loop, daemon=True)
+        _maintenance_scheduler_thread.start()
+        print("[维保定时任务] 已启动，每30秒检查维保窗口状态，每小时检查维保到期提醒")
+
 
 @app.on_event("shutdown")
 def shutdown_event():
     global _scheduler_running
     _scheduler_running = False
-    print("[日报定时任务] 正在停止...")
+    print("[定时任务] 正在停止所有定时任务...")
 
 
 @app.get("/health", summary="健康检查")
@@ -148,7 +180,14 @@ def health_check():
         refresh_all_freeze_status,
     )
     from daily_report import daily_reports, status_report_history, DailyReportStatus
+    from maintenance import (
+        maintenance_windows,
+        maintenance_alarms,
+        MaintenanceStatus,
+        check_all_windows,
+    )
     refresh_all_freeze_status()
+    check_all_windows()
     total_anomaly_events = sum(len(events) for events in cranes_anomaly_events.values())
     frozen_cranes = sum(1 for f in cranes_freeze_status.values() if f.is_frozen)
     total_window_records = sum(len(w) for w in cranes_sliding_window.values())
@@ -164,6 +203,14 @@ def health_check():
     approved_reports = sum(1 for r in daily_reports.values() if r.status == DailyReportStatus.APPROVED)
     rejected_reports = sum(1 for r in daily_reports.values() if r.status == DailyReportStatus.REJECTED)
     total_status_records = sum(len(records) for records in status_report_history.values())
+
+    total_m_windows = len(maintenance_windows)
+    pending_m = sum(1 for w in maintenance_windows.values() if w.status == MaintenanceStatus.PENDING)
+    in_progress_m = sum(1 for w in maintenance_windows.values() if w.status == MaintenanceStatus.IN_PROGRESS)
+    completed_m = sum(1 for w in maintenance_windows.values() if w.status == MaintenanceStatus.COMPLETED)
+    abnormal_m = sum(1 for w in maintenance_windows.values() if w.status == MaintenanceStatus.ABNORMAL)
+    active_m = sum(1 for w in maintenance_windows.values() if w.is_active)
+    total_m_alarms = len(maintenance_alarms)
 
     return {
         "status": "ok",
@@ -187,6 +234,15 @@ def health_check():
             "pending_reports": pending_reports,
             "approved_reports": approved_reports,
             "rejected_reports": rejected_reports,
+        },
+        "maintenance_stats": {
+            "total_windows": total_m_windows,
+            "pending_windows": pending_m,
+            "in_progress_windows": in_progress_m,
+            "completed_windows": completed_m,
+            "abnormal_windows": abnormal_m,
+            "active_windows": active_m,
+            "total_maintenance_alarms": total_m_alarms,
         },
         "total_status_history_records": total_status_records,
         "timestamp": time.time(),

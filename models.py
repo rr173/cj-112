@@ -70,6 +70,35 @@ class AlarmType(str, Enum):
     LOAD_MOMENT_WARNING = "LOAD_MOMENT_WARNING"
 
 
+class MaintenanceStatus(str, Enum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    ABNORMAL = "ABNORMAL"
+
+
+class MaintenanceType(str, Enum):
+    ROUTINE = "ROUTINE"
+    COMPREHENSIVE = "COMPREHENSIVE"
+    EMERGENCY = "EMERGENCY"
+    SEASONAL = "SEASONAL"
+
+
+class MaintenanceAlarmType(str, Enum):
+    MAINTENANCE_TIMEOUT = "MAINTENANCE_TIMEOUT"
+    MAINTENANCE_DUE_SOON = "MAINTENANCE_DUE_SOON"
+    MAINTENANCE_OVERDUE = "MAINTENANCE_OVERDUE"
+
+
+class MaintenanceDailyStats(BaseModel):
+    in_maintenance_period: bool = False
+    maintenance_window_id: Optional[str] = None
+    maintenance_type: Optional[MaintenanceType] = None
+    suppressed_collision_alarms: int = 0
+    supplied_anomaly_alarms: int = 0
+    total_suppressed_alarms: int = 0
+
+
 class ArbEventLog(BaseModel):
     event_id: str
     event_type: EventType
@@ -303,6 +332,7 @@ class DailyReport(BaseModel):
     alarm_stats: AlarmStats = AlarmStats()
     freeze_lock_stats: FreezeLockStats = FreezeLockStats()
     token_stats: TokenStats = TokenStats()
+    maintenance_stats: MaintenanceDailyStats = MaintenanceDailyStats()
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
@@ -343,3 +373,80 @@ class DailyReportSummaryResponse(BaseModel):
     start_date: str
     end_date: str
     summaries: List[DailyReportSummaryItem] = []
+
+
+class MaintenanceWindowCreate(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    start_time: float = Field(description="停机窗口开始时间(Unix时间戳)")
+    end_time: float = Field(description="停机窗口结束时间(Unix时间戳)")
+    maintenance_type: MaintenanceType = Field(default=MaintenanceType.ROUTINE, description="维保类型")
+    responsible_person: str = Field(description="负责人")
+    remarks: Optional[str] = Field(default="", description="备注")
+
+
+class MaintenanceWindow(BaseModel):
+    window_id: str
+    crane_id: str
+    start_time: float
+    end_time: float
+    maintenance_type: MaintenanceType
+    responsible_person: str
+    remarks: str = ""
+    status: MaintenanceStatus = MaintenanceStatus.PENDING
+    created_at: float
+    updated_at: float
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    is_active: bool = False
+    is_timeout: bool = False
+
+
+class MaintenanceRecord(BaseModel):
+    record_id: str
+    window_id: str
+    crane_id: str
+    replaced_parts: List[str] = Field(default=[], description="更换部件列表")
+    inspection_results: str = Field(description="检测结果描述")
+    next_suggested_maintenance_date: Optional[float] = Field(default=None, description="下次建议维保时间(Unix时间戳)")
+    confirmed_by: str = Field(description="确认人")
+    confirmed_at: float
+    remarks: str = ""
+
+
+class MaintenanceConfirmRequest(BaseModel):
+    replaced_parts: List[str] = Field(default=[], description="更换部件列表")
+    inspection_results: str = Field(description="检测结果描述")
+    next_suggested_maintenance_date: Optional[float] = Field(default=None, description="下次建议维保时间(Unix时间戳)")
+    confirmed_by: str = Field(description="确认人")
+    remarks: Optional[str] = Field(default="", description="备注")
+
+
+class MaintenanceAlarmEvent(BaseModel):
+    alarm_id: str
+    alarm_type: MaintenanceAlarmType
+    window_id: str
+    crane_id: str
+    timestamp: float
+    datetime_str: str
+    message: str
+    details: Dict = {}
+
+
+class CraneMaintenanceStatus(BaseModel):
+    crane_id: str
+    crane_name: str
+    last_maintenance_time: Optional[float] = None
+    next_due_date: Optional[float] = None
+    days_until_due: Optional[int] = None
+    current_window: Optional[MaintenanceWindow] = None
+    maintenance_status: MaintenanceStatus = MaintenanceStatus.COMPLETED
+    maintenance_history_count: int = 0
+    cycle_days: int = 30
+
+
+class MaintenanceWindowQuery(BaseModel):
+    crane_id: Optional[str] = Field(default=None, description="按塔吊ID筛选")
+    status: Optional[MaintenanceStatus] = Field(default=None, description="按状态筛选")
+    maintenance_type: Optional[MaintenanceType] = Field(default=None, description="按维保类型筛选")
+    start_from: Optional[float] = Field(default=None, description="窗口开始时间下限")
+    end_before: Optional[float] = Field(default=None, description="窗口结束时间上限")
