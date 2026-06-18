@@ -30,6 +30,7 @@ from routes_path import router as path_router
 from routes_inspection import router as inspection_router
 from routes_cooperative import router as cooperative_router
 from routes_load_moment import router as load_moment_router
+from routes_wind_speed import router as wind_speed_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -37,6 +38,7 @@ from operator_training import init_operator_module
 from path_planner import init_path_planner
 from inspection import init_inspection_module, check_overdue_hazards
 from load_moment_monitor import init_load_moment_monitor_module
+from wind_speed_monitor import init_wind_speed_monitor_module
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -51,6 +53,7 @@ app.include_router(path_router)
 app.include_router(inspection_router)
 app.include_router(cooperative_router)
 app.include_router(load_moment_router)
+app.include_router(wind_speed_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -183,6 +186,7 @@ def init_cranes():
     from cooperative_lift import init_cooperative_lift_module
     init_cooperative_lift_module()
     init_load_moment_monitor_module()
+    init_wind_speed_monitor_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -251,6 +255,8 @@ def health_check():
     overspeed_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.TROLLEY_OVERSPEED)
     moment_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.LOAD_MOMENT_WARNING)
     collision_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.COLLISION)
+    wind_warning_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.WIND_SPEED_WARNING)
+    wind_shutdown_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.WIND_SPEED_SHUTDOWN)
 
     total_reports = len(daily_reports)
     pending_reports = sum(1 for r in daily_reports.values() if r.status == DailyReportStatus.PENDING)
@@ -301,6 +307,10 @@ def health_check():
     overload_stats = get_overload_stats()
     total_weight_records = sum(len(records) for records in cranes_weight_records.values())
 
+    from wind_speed_monitor import get_wind_stats, cranes_wind_records
+    wind_stats = get_wind_stats()
+    total_wind_records = sum(len(records) for records in cranes_wind_records.values())
+
     return {
         "status": "ok",
         "service": "塔吊防碰撞联锁服务",
@@ -311,6 +321,8 @@ def health_check():
             "rotation_oscillation": rotation_alarms,
             "trolley_overspeed": overspeed_alarms,
             "load_moment_warning": moment_alarms,
+            "wind_speed_warning": wind_warning_alarms,
+            "wind_speed_shutdown": wind_shutdown_alarms,
         },
         "locked_cranes": sum(1 for l in cranes_lock_status.values() if l.is_locked),
         "frozen_cranes": frozen_cranes,
@@ -361,6 +373,10 @@ def health_check():
         "load_moment_stats": {
             "total_weight_records_cached": total_weight_records,
             **overload_stats,
+        },
+        "wind_speed_stats": {
+            "total_wind_records_cached": total_wind_records,
+            **wind_stats,
         },
         "timestamp": time.time(),
     }

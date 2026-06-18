@@ -57,6 +57,12 @@ def can_crane_cover(crane_id: str, lift_x: float, lift_y: float,
             return False
     except ImportError:
         pass
+    try:
+        from wind_speed_monitor import is_crane_wind_shutdown
+        if is_crane_wind_shutdown(crane_id):
+            return False
+    except ImportError:
+        pass
     return True
 
 
@@ -111,6 +117,12 @@ def _build_failure_reason(lift_x: float, lift_y: float,
             from cooperative_lift import is_crane_in_active_cooperative_task
             if is_crane_in_active_cooperative_task(crane_id):
                 issues.append("正在参与协同吊装任务")
+        except ImportError:
+            pass
+        try:
+            from wind_speed_monitor import is_crane_wind_shutdown
+            if is_crane_wind_shutdown(crane_id):
+                issues.append("处于风速停机状态")
         except ImportError:
             pass
         if issues:
@@ -214,9 +226,16 @@ def manually_assign_order(order_id: str, crane_id: str) -> Dict:
     except ImportError:
         pass
 
+    try:
+        from wind_speed_monitor import is_crane_wind_shutdown
+        if is_crane_wind_shutdown(crane_id):
+            return {"error": f"塔吊 {crane_id} 处于风速停机状态，无法分配工单"}
+    except ImportError:
+        pass
+
     if not can_crane_cover(crane_id, order.lift_x, order.lift_y,
                            order.drop_x, order.drop_y, order.weight):
-        return {"error": f"塔吊 {crane_id} 无法覆盖该工单的起吊点和/或落点，或预估重量超限"}
+        return {"error": f"塔吊 {crane_id} 无法覆盖该工单的起吊点和/或落点，或预估重量超限，或处于风速停机状态"}
 
     if order.status == WorkOrderStatus.ASSIGNED and order.assigned_crane_id:
         old_crane = order.assigned_crane_id

@@ -68,6 +68,85 @@ class AlarmType(str, Enum):
     ROTATION_OSCILLATION = "ROTATION_OSCILLATION"
     TROLLEY_OVERSPEED = "TROLLEY_OVERSPEED"
     LOAD_MOMENT_WARNING = "LOAD_MOMENT_WARNING"
+    WIND_SPEED_WARNING = "WIND_SPEED_WARNING"
+    WIND_SPEED_SHUTDOWN = "WIND_SPEED_SHUTDOWN"
+
+
+class WindAlarmLevel(str, Enum):
+    WARNING = "WARNING"
+    SHUTDOWN = "SHUTDOWN"
+
+
+class WindSpeedConfig(BaseModel):
+    shutdown_threshold: float = Field(default=20.0, description="停机阈值(米/秒), 瞬时风速超过即锁定")
+    warning_threshold: float = Field(default=15.0, description="预警阈值(米/秒), 60秒平均超过即预警")
+    avg_window_seconds: int = Field(default=60, description="平均风速计算窗口(秒)")
+    auto_recovery_consecutive_count: int = Field(default=10, description="自动恢复所需连续正常数据条数")
+    auto_recovery_threshold_ratio: float = Field(default=0.8, description="自动恢复阈值为停机阈值的比例")
+    max_records_per_crane: int = Field(default=120, description="每台塔吊保留的最大风速记录数")
+
+
+class WindSpeedReport(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    wind_speed: float = Field(description="瞬时风速(米/秒)")
+    sensor_timestamp: float = Field(description="传感器上报时间戳(Unix秒)")
+
+
+class WindSpeedRecord(BaseModel):
+    crane_id: str
+    wind_speed: float
+    sensor_timestamp: float
+    received_at: float
+    datetime_str: str
+
+
+class WindSpeedAlarmEvent(BaseModel):
+    alarm_id: str
+    alarm_type: AlarmType
+    alarm_level: WindAlarmLevel
+    crane_id: str
+    timestamp: float
+    datetime_str: str
+    wind_speed: float
+    avg_wind_speed_60s: Optional[float] = None
+    threshold: float
+    message: str
+    details: Dict = {}
+
+
+class WindSpeedRecoveryEvent(BaseModel):
+    recovery_id: str
+    crane_id: str
+    recovery_time: float
+    recovery_datetime_str: str
+    max_wind_speed_during_shutdown: float
+    avg_wind_speed_before_recovery: float
+    shutdown_duration_seconds: float
+    recovery_method: str
+    message: str
+
+
+class WindSpeedStatus(BaseModel):
+    crane_id: str
+    latest_wind_speed: Optional[float] = None
+    latest_sensor_timestamp: Optional[float] = None
+    latest_datetime_str: Optional[str] = None
+    avg_wind_speed_60s: Optional[float] = None
+    is_wind_shutdown: bool = False
+    wind_shutdown_at: Optional[float] = None
+    wind_shutdown_reason: Optional[str] = None
+    consecutive_normal_count: int = 0
+    current_config: WindSpeedConfig
+
+
+class WindSpeedThresholdUpdateRequest(BaseModel):
+    crane_id: Optional[str] = Field(default=None, description="塔吊ID，不指定则更新全局默认配置")
+    shutdown_threshold: Optional[float] = Field(default=None, description="停机阈值(米/秒)")
+    warning_threshold: Optional[float] = Field(default=None, description="预警阈值(米/秒)")
+    avg_window_seconds: Optional[int] = Field(default=None, description="平均风速计算窗口(秒)")
+    auto_recovery_consecutive_count: Optional[int] = Field(default=None, description="自动恢复所需连续正常数据条数")
+    auto_recovery_threshold_ratio: Optional[float] = Field(default=None, description="自动恢复阈值为停机阈值的比例")
+    max_records_per_crane: Optional[int] = Field(default=None, description="每台塔吊保留的最大风速记录数")
 
 
 class MaintenanceStatus(str, Enum):
@@ -305,6 +384,8 @@ class AlarmStats(BaseModel):
     rotation_oscillation: int = 0
     trolley_overspeed: int = 0
     load_moment_warning: int = 0
+    wind_speed_warning: int = 0
+    wind_speed_shutdown: int = 0
 
 
 class FreezeLockStats(BaseModel):

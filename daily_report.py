@@ -115,6 +115,10 @@ def count_alarms(crane_id: str, start_ts: float, end_ts: float) -> AlarmStats:
                     stats.trolley_overspeed += 1
                 elif alarm.alarm_type == AlarmType.LOAD_MOMENT_WARNING:
                     stats.load_moment_warning += 1
+                elif alarm.alarm_type == AlarmType.WIND_SPEED_WARNING:
+                    stats.wind_speed_warning += 1
+                elif alarm.alarm_type == AlarmType.WIND_SPEED_SHUTDOWN:
+                    stats.wind_speed_shutdown += 1
 
     return stats
 
@@ -408,7 +412,9 @@ def generate_summary(start_date: str, end_date: str) -> DailyReportSummaryRespon
             report.alarm_stats.collision +
             report.alarm_stats.rotation_oscillation +
             report.alarm_stats.trolley_overspeed +
-            report.alarm_stats.load_moment_warning
+            report.alarm_stats.load_moment_warning +
+            report.alarm_stats.wind_speed_warning +
+            report.alarm_stats.wind_speed_shutdown
         )
         s["total_freezes"] += report.freeze_lock_stats.freeze_count
         s["total_locks"] += report.freeze_lock_stats.lock_count

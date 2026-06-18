@@ -65,12 +65,31 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         except ImportError:
             pass
 
+    try:
+        from wind_speed_monitor import is_crane_wind_shutdown, get_crane_wind_shutdown_info
+        if is_crane_wind_shutdown(status.crane_id):
+            shutdown_info = get_crane_wind_shutdown_info(status.crane_id)
+            raise HTTPException(
+                status_code=423,
+                detail={
+                    "message": "塔吊处于风速停机状态，拒绝状态上报",
+                    "code": "WIND_SPEED_SHUTDOWN",
+                    "crane_id": status.crane_id,
+                    "wind_shutdown_at": shutdown_info.get("shutdown_at"),
+                    "wind_shutdown_reason": shutdown_info.get("shutdown_reason"),
+                    "hint": "请等待风速降低后系统自动恢复，或调用 /api/wind-speed/release/{crane_id} 手动解除",
+                }
+            )
+    except ImportError:
+        pass
+
     lock = cranes_lock_status.get(status.crane_id)
     if lock and lock.is_locked:
         raise HTTPException(
             status_code=423,
             detail={
                 "message": "塔吊已锁定,拒绝状态上报",
+                "code": "COLLISION_LOCK",
                 "crane_id": status.crane_id,
                 "locked_at": lock.locked_at,
                 "locked_reason": lock.locked_reason,

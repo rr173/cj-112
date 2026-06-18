@@ -103,6 +103,13 @@ def create_cooperative_task(create: CooperativeLiftCreate) -> Dict:
         elif cranes_lock_status.get(cid) and cranes_lock_status[cid].is_locked:
             lock_reason = cranes_lock_status[cid].locked_reason or "未知原因"
             busy_cranes.append({"crane_id": cid, "reason": f"塔吊处于锁定状态({lock_reason})"})
+        else:
+            try:
+                from wind_speed_monitor import is_crane_wind_shutdown
+                if is_crane_wind_shutdown(cid):
+                    busy_cranes.append({"crane_id": cid, "reason": "处于风速停机状态"})
+            except ImportError:
+                pass
 
     if busy_cranes:
         return {
