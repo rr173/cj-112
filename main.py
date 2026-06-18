@@ -29,12 +29,14 @@ from routes_operator import router as operator_router
 from routes_path import router as path_router
 from routes_inspection import router as inspection_router
 from routes_cooperative import router as cooperative_router
+from routes_load_moment import router as load_moment_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
 from operator_training import init_operator_module
 from path_planner import init_path_planner
 from inspection import init_inspection_module, check_overdue_hazards
+from load_moment_monitor import init_load_moment_monitor_module
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -48,6 +50,7 @@ app.include_router(operator_router)
 app.include_router(path_router)
 app.include_router(inspection_router)
 app.include_router(cooperative_router)
+app.include_router(load_moment_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -179,6 +182,7 @@ def init_cranes():
     init_inspection_module()
     from cooperative_lift import init_cooperative_lift_module
     init_cooperative_lift_module()
+    init_load_moment_monitor_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -293,6 +297,10 @@ def health_check():
     completed_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.COMPLETED)
     aborted_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.ABORTED)
 
+    from load_moment_monitor import get_overload_stats, cranes_weight_records
+    overload_stats = get_overload_stats()
+    total_weight_records = sum(len(records) for records in cranes_weight_records.values())
+
     return {
         "status": "ok",
         "service": "塔吊防碰撞联锁服务",
@@ -349,6 +357,10 @@ def health_check():
             "executing": executing_coop,
             "completed": completed_coop,
             "aborted": aborted_coop,
+        },
+        "load_moment_stats": {
+            "total_weight_records_cached": total_weight_records,
+            **overload_stats,
         },
         "timestamp": time.time(),
     }

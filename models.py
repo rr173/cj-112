@@ -852,3 +852,63 @@ class CooperativeLiftTask(BaseModel):
     abort_reason: Optional[str] = None
     height_desync_alarms: List[HeightDesyncAlarm] = []
     locked_cranes: List[str] = []
+
+
+class OverloadAlarmLevel(str, Enum):
+    YELLOW = "YELLOW"
+    ORANGE = "ORANGE"
+    RED = "RED"
+
+
+class LoadMomentEnvelopePoint(BaseModel):
+    distance: float = Field(description="变幅距离(米)")
+    max_load: float = Field(description="该距离对应的最大允许载荷(吨)")
+
+
+class WeightSensorReport(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    weight: float = Field(description="实时重量(吨)")
+    sensor_timestamp: float = Field(description="传感器上报时间戳(Unix秒)")
+
+
+class WeightRecord(BaseModel):
+    crane_id: str
+    weight: float
+    sensor_timestamp: float
+    received_at: float
+    datetime_str: str
+    trolley_position: Optional[float] = Field(default=None, description="对应的变幅小车位置(米)")
+    allowed_load: Optional[float] = Field(default=None, description="当前位置允许的最大载荷(吨)")
+    overload_ratio: Optional[float] = Field(default=None, description="超载比例(实际/允许)")
+
+
+class OverloadAlarmEvent(BaseModel):
+    alarm_id: str
+    crane_id: str
+    timestamp: float
+    datetime_str: str
+    alarm_level: OverloadAlarmLevel
+    realtime_weight: float
+    allowed_load: float
+    trolley_position: float
+    overload_ratio: float
+    message: str
+    crane_locked: bool = False
+    emergency_notification: bool = False
+
+
+class RealtimeLoadStatus(BaseModel):
+    crane_id: str
+    latest_weight: Optional[float] = None
+    latest_sensor_timestamp: Optional[float] = None
+    latest_datetime_str: Optional[str] = None
+    current_trolley_position: Optional[float] = None
+    allowed_load: Optional[float] = None
+    overload_ratio: Optional[float] = None
+    alarm_level: Optional[OverloadAlarmLevel] = None
+    is_locked: bool = False
+
+
+class EnvelopeUpdateRequest(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    envelope_points: List[LoadMomentEnvelopePoint] = Field(description="力矩包络曲线采样点列表，至少5个点，按变幅距离升序排列")
