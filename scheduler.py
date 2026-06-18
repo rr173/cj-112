@@ -103,6 +103,23 @@ def _find_best_crane(lift_x: float, lift_y: float,
     except ImportError:
         pass
 
+    try:
+        from energy_monitor import is_crane_in_limit_list
+        non_limit = [cid for cid in candidates if not is_crane_in_limit_list(cid)]
+        limit_list = [cid for cid in candidates if is_crane_in_limit_list(cid)]
+
+        if non_limit:
+            candidates = non_limit
+        elif limit_list:
+            from energy_monitor import cranes_limit_list
+            def limit_sort_key(cid):
+                entry = cranes_limit_list.get(cid)
+                return entry.forecast_exceed_ratio if entry else 999.0
+            limit_list.sort(key=limit_sort_key)
+            return limit_list[0]
+    except ImportError:
+        pass
+
     priority_weight = PRIORITY_WEIGHT.get(priority, 2)
 
     def sort_key(cid):

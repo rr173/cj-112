@@ -146,6 +146,13 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         except ImportError:
             overdue_warnings = []
 
+        energy_limit_hint = None
+        try:
+            from energy_monitor import get_crane_limit_hint
+            energy_limit_hint = get_crane_limit_hint(status.crane_id)
+        except ImportError:
+            pass
+
         response = {
             "code": 0,
             "message": "状态上报成功（维保停机模式：已记录，已跳过碰撞检测和异常检测）",
@@ -155,6 +162,7 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
             "overlap_sectors_entered": [],
             "alarms_triggered": 0,
             "alarm_details": [],
+            "energy_limit_hint": energy_limit_hint,
         }
         if overdue_warnings:
             response["overdue_hazard_warnings"] = overdue_warnings
@@ -262,6 +270,13 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     except ImportError:
         overdue_warnings = []
 
+    energy_limit_hint = None
+    try:
+        from energy_monitor import get_crane_limit_hint
+        energy_limit_hint = get_crane_limit_hint(status.crane_id)
+    except ImportError:
+        pass
+
     message = "状态上报成功"
     if coop_results:
         aborted_count = sum(1 for r in coop_results if r.get("aborted"))
@@ -286,6 +301,7 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         ],
         "alarms_triggered": len(triggered_alarms),
         "alarm_details": triggered_alarms,
+        "energy_limit_hint": energy_limit_hint,
     }
     if coop_results:
         response["cooperative_lift_results"] = coop_results

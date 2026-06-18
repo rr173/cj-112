@@ -11,6 +11,8 @@ from models import (
     EnergyMeterRecord,
     EnergyMeterReport,
     AlarmType,
+    EnergyForecastDetail,
+    EnergyLimitListEntry,
 )
 from collision import cranes_config, alarm_history
 
@@ -34,6 +36,19 @@ cranes_yellow_alarm_triggered: Dict[str, bool] = {}
 cranes_red_alarm_triggered: Dict[str, bool] = {}
 
 _energy_current_date: str = ""
+
+FORECAST_THRESHOLD_RATIO = 1.2
+FORECAST_RECOVERY_RATIO = 1.0
+MIN_SAMPLE_HOURS = 2.0
+DAY_TOTAL_HOURS = 24.0
+
+cranes_forecast_alarm_triggered: Dict[str, bool] = {}
+
+cranes_forecast_details: Dict[str, EnergyForecastDetail] = {}
+
+cranes_limit_list: Dict[str, EnergyLimitListEntry] = {}
+
+cranes_limit_history: List[Dict] = []
 
 
 def _datetime_str(ts: float) -> str:
@@ -60,6 +75,10 @@ def init_energy_monitor_module():
             cranes_yellow_alarm_triggered[crane_id] = False
         if crane_id not in cranes_red_alarm_triggered:
             cranes_red_alarm_triggered[crane_id] = False
+        if crane_id not in cranes_forecast_alarm_triggered:
+            cranes_forecast_alarm_triggered[crane_id] = False
+        if crane_id not in cranes_forecast_details:
+            cranes_forecast_details[crane_id] = EnergyForecastDetail(crane_id=crane_id)
     print(f"[能耗监测模块] 初始化完成，已为 {len(cranes_quota_kwh)} 台塔吊加载能耗配额")
 
 
@@ -67,6 +86,7 @@ def check_and_reset_daily():
     global _energy_current_date
     today = _get_today_date_str()
     if _energy_current_date != today:
+        _record_limit_list_snapshot(_energy_current_date)
         _energy_current_date = today
         for crane_id in cranes_config.keys():
             cranes_daily_energy_kwh[crane_id] = 0.0
@@ -74,11 +94,53 @@ def check_and_reset_daily():
             cranes_over_limit[crane_id] = False
             cranes_yellow_alarm_triggered[crane_id] = False
             cranes_red_alarm_triggered[crane_id] = False
+            cranes_forecast_alarm_triggered[crane_id] = False
+            cranes_forecast_details[crane_id] = EnergyForecastDetail(crane_id=crane_id)
+        cranes_limit_list.clear()
         print(f"[能耗监测模块] 零点重置完成，已清空所有塔吊当日能耗数据，日期: {today}")
+
+
+def _record_limit_list_snapshot(date_str: str):
+    if not cranes_limit_list:
+        return
+    for entry in cranes_limit_list.values():
+        cranes_limit_history.append({
+            "date": date_str,
+            "crane_id": entry.crane_id,
+            "action": "LEFT_AT_DAY_END",
+            "forecast_exceed_ratio": entry.forecast_exceed_ratio,
+            "joined_at": entry.joined_at,
+        })
 
 
 def is_crane_energy_over_limit(crane_id: str) -> bool:
     return cranes_over_limit.get(crane_id, False)
+
+
+def is_crane_in_limit_list(crane_id: str) -> bool:
+    return crane_id in cranes_limit_list
+
+
+def get_crane_limit_hint(crane_id: str) -> Optional[Dict]:
+    entry = cranes_limit_list.get(crane_id)
+    if not entry:
+        return None
+    return {
+        "in_limit_list": True,
+        "forecast_exceed_ratio": round(entry.forecast_exceed_ratio, 4),
+        "forecast_total_kwh": round(entry.forecast_total_kwh, 4),
+        "quota_kwh": entry.quota_kwh,
+        "hint": "您所在塔吊已被列入能耗预测超标限电名单，请降低作业功率或减少高能耗作业",
+        "joined_at": entry.joined_at,
+        "joined_datetime_str": entry.joined_datetime_str,
+    }
+
+
+def get_time_elapsed_today(now_ts: Optional[float] = None) -> float:
+    now = datetime.fromtimestamp(now_ts) if now_ts else datetime.now()
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed_seconds = (now - start_of_day).total_seconds()
+    return elapsed_seconds / 3600.0
 
 
 def get_crane_energy_over_limit_amount(crane_id: str) -> float:
@@ -121,6 +183,224 @@ def calculate_efficiency_ratio(crane_id: str) -> Optional[float]:
     if energy_since_order_start <= 0:
         return None
     return round(energy_since_order_start / weight_tons, 4)
+
+
+def calculate_energy_forecast(crane_id: str, now_ts: Optional[float] = None) -> EnergyForecastDetail:
+    if crane_id not in cranes_forecast_details:
+        cranes_forecast_details[crane_id] = EnergyForecastDetail(crane_id=crane_id)
+
+    detail = cranes_forecast_details[crane_id]
+    detail.crane_id = crane_id
+    detail.quota_kwh = cranes_quota_kwh.get(crane_id, _default_quota_kwh)
+    detail.daily_consumed_kwh = cranes_daily_energy_kwh.get(crane_id, 0.0)
+    detail.day_total_hours = DAY_TOTAL_HOURS
+
+    elapsed_hours = get_time_elapsed_today(now_ts)
+    detail.time_elapsed_hours = round(elapsed_hours, 4)
+    detail.time_elapsed_ratio = round(elapsed_hours / DAY_TOTAL_HOURS, 4) if DAY_TOTAL_HOURS > 0 else 0.0
+
+    is_enough = elapsed_hours >= MIN_SAMPLE_HOURS
+    detail.is_enough_sample = is_enough
+
+    if is_enough and elapsed_hours > 0:
+        forecast_total = detail.daily_consumed_kwh * (DAY_TOTAL_HOURS / elapsed_hours)
+        detail.forecast_total_kwh = round(forecast_total, 4)
+        detail.forecast_exceed_ratio = round(forecast_total / detail.quota_kwh, 4) if detail.quota_kwh > 0 else 0.0
+        detail.is_forecast_exceed = detail.forecast_exceed_ratio >= FORECAST_THRESHOLD_RATIO
+    else:
+        detail.forecast_total_kwh = 0.0
+        detail.forecast_exceed_ratio = 0.0
+        detail.is_forecast_exceed = False
+
+    now = now_ts or time.time()
+    detail.last_forecast_at = now
+    detail.last_forecast_datetime_str = _datetime_str(now)
+
+    return detail
+
+
+def _create_forecast_alarm(
+    crane_id: str,
+    detail: EnergyForecastDetail,
+    now: float,
+) -> EnergyAlarmEvent:
+    alarm_type = AlarmType.ENERGY_FORECAST_EXCEEDED
+    message = (f"能耗预测超标告警: 塔吊 {crane_id} 当日已消耗 {detail.daily_consumed_kwh:.2f} kWh，"
+               f"已过时间占比 {detail.time_elapsed_ratio*100:.1f}%({detail.time_elapsed_hours:.1f}h)，"
+               f"线性外推预测当日总耗 {detail.forecast_total_kwh:.2f} kWh，"
+               f"预测超标比例 {detail.forecast_exceed_ratio*100:.1f}%，已加入限电名单")
+
+    alarm = EnergyAlarmEvent(
+        alarm_id=f"ENERGY-FC-{uuid.uuid4().hex[:12].upper()}",
+        alarm_type=alarm_type,
+        alarm_level=EnergyAlarmLevel.FORECAST,
+        crane_id=crane_id,
+        timestamp=now,
+        datetime_str=_datetime_str(now),
+        cumulative_energy_kwh=detail.daily_consumed_kwh,
+        quota_kwh=detail.quota_kwh,
+        quota_usage_ratio=detail.forecast_exceed_ratio,
+        message=message,
+        details={
+            "forecast_total_kwh": detail.forecast_total_kwh,
+            "time_elapsed_hours": detail.time_elapsed_hours,
+            "time_elapsed_ratio": detail.time_elapsed_ratio,
+            "forecast_exceed_ratio": detail.forecast_exceed_ratio,
+            "alarm_type": "FORECAST",
+        },
+    )
+
+    cranes_energy_alarms.append(alarm)
+
+    try:
+        from models import AlarmEvent
+        generic_alarm = AlarmEvent(
+            alarm_id=alarm.alarm_id,
+            alarm_type=alarm_type,
+            timestamp=alarm.timestamp,
+            datetime_str=alarm.datetime_str,
+            crane_a_id=crane_id,
+            crane_b_id="",
+            message=alarm.message,
+            details={
+                "cumulative_energy_kwh": detail.daily_consumed_kwh,
+                "quota_kwh": detail.quota_kwh,
+                "forecast_total_kwh": detail.forecast_total_kwh,
+                "forecast_exceed_ratio": detail.forecast_exceed_ratio,
+                "time_elapsed_hours": detail.time_elapsed_hours,
+                "alarm_level": EnergyAlarmLevel.FORECAST.value,
+            },
+        )
+        alarm_history.append(generic_alarm)
+    except Exception as e:
+        print(f"[能耗监测模块] 写入预测告警历史失败: {e}")
+
+    return alarm
+
+
+def _add_crane_to_limit_list(crane_id: str, detail: EnergyForecastDetail, now: float,
+                             reason: str = "FORECAST_EXCEED", operator: Optional[str] = None) -> EnergyLimitListEntry:
+    config = cranes_config.get(crane_id)
+    entry = EnergyLimitListEntry(
+        crane_id=crane_id,
+        crane_name=config.name if config else crane_id,
+        joined_at=now,
+        joined_datetime_str=_datetime_str(now),
+        forecast_exceed_ratio=detail.forecast_exceed_ratio,
+        forecast_total_kwh=detail.forecast_total_kwh,
+        daily_consumed_kwh=detail.daily_consumed_kwh,
+        quota_kwh=detail.quota_kwh,
+        time_elapsed_ratio=detail.time_elapsed_ratio,
+        join_reason=reason,
+        is_manual_override=operator is not None,
+        override_by=operator,
+    )
+    cranes_limit_list[crane_id] = entry
+
+    cranes_limit_history.append({
+        "date": _get_today_date_str(),
+        "crane_id": crane_id,
+        "action": "JOIN",
+        "reason": reason,
+        "forecast_exceed_ratio": detail.forecast_exceed_ratio,
+        "joined_at": now,
+        "operator": operator,
+    })
+
+    print(f"[能耗监测模块] 塔吊 {crane_id} 加入限电名单，预测超标: {detail.forecast_exceed_ratio*100:.1f}%")
+    return entry
+
+
+def _remove_crane_from_limit_list(crane_id: str, now: float, reason: str = "FORECAST_RECOVERY",
+                                  operator: Optional[str] = None) -> bool:
+    if crane_id not in cranes_limit_list:
+        return False
+
+    entry = cranes_limit_list.pop(crane_id)
+
+    cranes_limit_history.append({
+        "date": _get_today_date_str(),
+        "crane_id": crane_id,
+        "action": "LEAVE",
+        "reason": reason,
+        "forecast_exceed_ratio": entry.forecast_exceed_ratio,
+        "joined_at": entry.joined_at,
+        "left_at": now,
+        "operator": operator,
+    })
+
+    try:
+        from models import AlarmEvent
+        recovery_alarm = AlarmEvent(
+            alarm_id=f"ENERGY-RC-{uuid.uuid4().hex[:12].upper()}",
+            alarm_type=AlarmType.ENERGY_LIMIT_RECOVERY,
+            timestamp=now,
+            datetime_str=_datetime_str(now),
+            crane_a_id=crane_id,
+            crane_b_id="",
+            message=(f"能耗预测恢复: 塔吊 {crane_id} 预测值已回落到配额100%以下，"
+                     f"已从限电名单移除，移除原因: {reason}"),
+            details={
+                "crane_id": crane_id,
+                "join_reason": entry.join_reason,
+                "leave_reason": reason,
+                "joined_at": entry.joined_at,
+                "left_at": now,
+                "operator": operator,
+            },
+        )
+        alarm_history.append(recovery_alarm)
+    except Exception as e:
+        print(f"[能耗监测模块] 写入恢复事件历史失败: {e}")
+
+    print(f"[能耗监测模块] 塔吊 {crane_id} 从限电名单移除，原因: {reason}")
+    return True
+
+
+def manually_remove_crane_from_limit_list(crane_id: str, operator: Optional[str] = None,
+                                          reason: Optional[str] = None) -> Dict:
+    if crane_id not in cranes_config:
+        raise ValueError(f"塔吊 {crane_id} 不存在")
+
+    now = time.time()
+    remove_reason = reason or "MANUAL_OVERRIDE"
+    removed = _remove_crane_from_limit_list(crane_id, now, remove_reason, operator)
+
+    return {
+        "success": True,
+        "removed": removed,
+        "crane_id": crane_id,
+        "operator": operator,
+        "reason": remove_reason,
+        "timestamp": now,
+        "datetime_str": _datetime_str(now),
+    }
+
+
+def get_limit_list() -> List[EnergyLimitListEntry]:
+    return list(cranes_limit_list.values())
+
+
+def get_forecast_detail(crane_id: str) -> Optional[EnergyForecastDetail]:
+    if crane_id not in cranes_config:
+        return None
+    return calculate_energy_forecast(crane_id)
+
+
+def _check_energy_forecast(crane_id: str, cumulative_kwh: float, now: float):
+    detail = calculate_energy_forecast(crane_id, now)
+    was_in_list = crane_id in cranes_limit_list
+
+    if detail.is_enough_sample and detail.is_forecast_exceed:
+        if not cranes_forecast_alarm_triggered.get(crane_id, False):
+            _create_forecast_alarm(crane_id, detail, now)
+            cranes_forecast_alarm_triggered[crane_id] = True
+
+        if not was_in_list:
+            _add_crane_to_limit_list(crane_id, detail, now)
+
+    if was_in_list and detail.is_enough_sample and detail.forecast_exceed_ratio < FORECAST_RECOVERY_RATIO:
+        _remove_crane_from_limit_list(crane_id, now, "FORECAST_RECOVERY")
 
 
 def _create_energy_alarm(
@@ -238,6 +518,10 @@ def process_energy_meter_report(report: EnergyMeterReport) -> Dict:
         cranes_yellow_alarm_triggered[crane_id] = False
     if crane_id not in cranes_red_alarm_triggered:
         cranes_red_alarm_triggered[crane_id] = False
+    if crane_id not in cranes_forecast_alarm_triggered:
+        cranes_forecast_alarm_triggered[crane_id] = False
+    if crane_id not in cranes_forecast_details:
+        cranes_forecast_details[crane_id] = EnergyForecastDetail(crane_id=crane_id)
     if crane_id not in cranes_quota_kwh:
         cranes_quota_kwh[crane_id] = _default_quota_kwh
 
@@ -254,6 +538,10 @@ def process_energy_meter_report(report: EnergyMeterReport) -> Dict:
     cranes_daily_energy_kwh[crane_id] = report.cumulative_energy_kwh
 
     _check_energy_alarms(crane_id, report.cumulative_energy_kwh, now)
+    _check_energy_forecast(crane_id, report.cumulative_energy_kwh, now)
+
+    forecast_detail = cranes_forecast_details.get(crane_id)
+    limit_hint = get_crane_limit_hint(crane_id)
 
     result = {
         "recorded": True,
@@ -262,6 +550,8 @@ def process_energy_meter_report(report: EnergyMeterReport) -> Dict:
         "daily_cumulative_kwh": report.cumulative_energy_kwh,
         "is_over_limit": cranes_over_limit.get(crane_id, False),
         "alarm_triggered": False,
+        "forecast": forecast_detail.model_dump() if forecast_detail else None,
+        "limit_hint": limit_hint,
     }
 
     if cranes_energy_alarms and cranes_energy_alarms[-1].crane_id == crane_id and now - cranes_energy_alarms[-1].timestamp < 1.0:
@@ -390,12 +680,17 @@ def get_energy_ranking() -> List[Dict]:
     for crane_id in cranes_config.keys():
         daily_cumulative = cranes_daily_energy_kwh.get(crane_id, 0.0)
         config = cranes_config.get(crane_id)
+        in_limit_list = crane_id in cranes_limit_list
+        forecast_detail = calculate_energy_forecast(crane_id)
         ranking.append({
             "crane_id": crane_id,
             "crane_name": config.name if config else crane_id,
             "daily_cumulative_kwh": round(daily_cumulative, 4),
             "quota_kwh": cranes_quota_kwh.get(crane_id, _default_quota_kwh),
             "is_over_limit": cranes_over_limit.get(crane_id, False),
+            "is_in_limit_list": in_limit_list,
+            "forecast_total_kwh": round(forecast_detail.forecast_total_kwh, 4) if forecast_detail else 0.0,
+            "forecast_exceed_ratio": round(forecast_detail.forecast_exceed_ratio, 4) if forecast_detail else 0.0,
         })
     ranking.sort(key=lambda x: x["daily_cumulative_kwh"], reverse=True)
     return ranking
@@ -407,7 +702,14 @@ def get_energy_daily_stats(crane_id: str, start_ts: float, end_ts: float) -> Ene
               if a.crane_id == crane_id and start_ts <= a.timestamp < end_ts]
     stats.yellow_alarm_count = sum(1 for a in alarms if a.alarm_level == EnergyAlarmLevel.YELLOW)
     stats.red_alarm_count = sum(1 for a in alarms if a.alarm_level == EnergyAlarmLevel.RED)
+    stats.forecast_alarm_count = sum(1 for a in alarms if a.alarm_level == EnergyAlarmLevel.FORECAST)
     stats.over_limit = cranes_over_limit.get(crane_id, False)
+
+    today_date = _get_today_date_str()
+    limit_events = [e for e in cranes_limit_history
+                    if e["crane_id"] == crane_id and e.get("date") == today_date]
+    stats.limit_recovery_count = sum(1 for e in limit_events if e.get("action") == "LEAVE")
+    stats.was_in_limit_list = crane_id in cranes_limit_list or len(limit_events) > 0
 
     records = cranes_energy_records.get(crane_id, [])
     day_records = [r for r in records if start_ts <= r.sensor_timestamp < end_ts]
@@ -425,14 +727,18 @@ def get_energy_stats() -> Dict:
     total_alarms = len(cranes_energy_alarms)
     yellow_alarms = sum(1 for a in cranes_energy_alarms if a.alarm_level == EnergyAlarmLevel.YELLOW)
     red_alarms = sum(1 for a in cranes_energy_alarms if a.alarm_level == EnergyAlarmLevel.RED)
+    forecast_alarms = sum(1 for a in cranes_energy_alarms if a.alarm_level == EnergyAlarmLevel.FORECAST)
     over_limit_count = sum(1 for v in cranes_over_limit.values() if v)
+    limit_list_count = len(cranes_limit_list)
     total_records = sum(len(records) for records in cranes_energy_records.values())
 
     return {
         "total_energy_alarms": total_alarms,
         "yellow_alarm_count": yellow_alarms,
         "red_alarm_count": red_alarms,
+        "forecast_alarm_count": forecast_alarms,
         "over_limit_cranes": over_limit_count,
+        "limit_list_cranes": limit_list_count,
         "total_meter_records_cached": total_records,
         "default_daily_quota_kwh": _default_quota_kwh,
     }

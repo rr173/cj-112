@@ -72,6 +72,8 @@ class AlarmType(str, Enum):
     WIND_SPEED_SHUTDOWN = "WIND_SPEED_SHUTDOWN"
     ENERGY_QUOTA_WARNING = "ENERGY_QUOTA_WARNING"
     ENERGY_QUOTA_EXCEEDED = "ENERGY_QUOTA_EXCEEDED"
+    ENERGY_FORECAST_EXCEEDED = "ENERGY_FORECAST_EXCEEDED"
+    ENERGY_LIMIT_RECOVERY = "ENERGY_LIMIT_RECOVERY"
 
 
 class WindAlarmLevel(str, Enum):
@@ -390,6 +392,8 @@ class AlarmStats(BaseModel):
     wind_speed_shutdown: int = 0
     energy_quota_warning: int = 0
     energy_quota_exceeded: int = 0
+    energy_forecast_exceeded: int = 0
+    energy_limit_recovery: int = 0
 
 
 class FreezeLockStats(BaseModel):
@@ -421,6 +425,9 @@ class EnergyDailyStats(BaseModel):
     yellow_alarm_count: int = 0
     red_alarm_count: int = 0
     over_limit: bool = False
+    forecast_alarm_count: int = 0
+    limit_recovery_count: int = 0
+    was_in_limit_list: bool = False
 
 
 class DailyReport(BaseModel):
@@ -1012,6 +1019,7 @@ class EnvelopeUpdateRequest(BaseModel):
 class EnergyAlarmLevel(str, Enum):
     YELLOW = "YELLOW"
     RED = "RED"
+    FORECAST = "FORECAST"
 
 
 class EnergyMeterReport(BaseModel):
@@ -1062,3 +1070,39 @@ class EnergyCraneStatus(BaseModel):
 class EnergyQuotaUpdateRequest(BaseModel):
     crane_id: Optional[str] = Field(default=None, description="塔吊ID，不指定则更新全局默认配额")
     daily_quota_kwh: float = Field(description="每日能耗配额(千瓦时)")
+
+
+class EnergyForecastDetail(BaseModel):
+    crane_id: str
+    daily_consumed_kwh: float = 0.0
+    time_elapsed_ratio: float = 0.0
+    time_elapsed_hours: float = 0.0
+    day_total_hours: float = 24.0
+    forecast_total_kwh: float = 0.0
+    quota_kwh: float = 500.0
+    forecast_exceed_ratio: float = 0.0
+    is_forecast_exceed: bool = False
+    is_enough_sample: bool = False
+    last_forecast_at: Optional[float] = None
+    last_forecast_datetime_str: Optional[str] = None
+
+
+class EnergyLimitListEntry(BaseModel):
+    crane_id: str
+    crane_name: str = ""
+    joined_at: float
+    joined_datetime_str: str
+    forecast_exceed_ratio: float
+    forecast_total_kwh: float
+    daily_consumed_kwh: float
+    quota_kwh: float
+    time_elapsed_ratio: float
+    join_reason: str = "FORECAST_EXCEED"
+    is_manual_override: bool = False
+    override_by: Optional[str] = None
+
+
+class EnergyLimitRemoveRequest(BaseModel):
+    crane_id: str = Field(description="要从限电名单移除的塔吊ID")
+    operator: Optional[str] = Field(default=None, description="操作人(管理员)")
+    reason: Optional[str] = Field(default=None, description="移除原因")

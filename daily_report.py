@@ -123,6 +123,10 @@ def count_alarms(crane_id: str, start_ts: float, end_ts: float) -> AlarmStats:
                     stats.energy_quota_warning += 1
                 elif alarm.alarm_type == AlarmType.ENERGY_QUOTA_EXCEEDED:
                     stats.energy_quota_exceeded += 1
+                elif alarm.alarm_type == AlarmType.ENERGY_FORECAST_EXCEEDED:
+                    stats.energy_forecast_exceeded += 1
+                elif alarm.alarm_type == AlarmType.ENERGY_LIMIT_RECOVERY:
+                    stats.energy_limit_recovery += 1
 
     return stats
 
@@ -289,6 +293,28 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
             pass
         remarks += f"当日累计能耗{energy_stats.total_energy_kwh:.2f} kWh，配额{quota_kwh:.0f} kWh"
 
+    if energy_stats.forecast_alarm_count > 0 or energy_stats.was_in_limit_list:
+        if remarks:
+            remarks += " | "
+        limit_parts = []
+        if energy_stats.forecast_alarm_count > 0:
+            limit_parts.append(f"触发能耗预测超标告警{energy_stats.forecast_alarm_count}次")
+        if energy_stats.was_in_limit_list:
+            limit_parts.append("曾进入限电名单")
+        if energy_stats.limit_recovery_count > 0:
+            limit_parts.append(f"限电恢复{energy_stats.limit_recovery_count}次")
+        remarks += "限电情况: " + "，".join(limit_parts)
+
+    if alarm_stats.energy_forecast_exceeded > 0 or alarm_stats.energy_limit_recovery > 0:
+        if remarks:
+            remarks += " | "
+        event_parts = []
+        if alarm_stats.energy_forecast_exceeded > 0:
+            event_parts.append(f"预测超标事件{alarm_stats.energy_forecast_exceeded}次")
+        if alarm_stats.energy_limit_recovery > 0:
+            event_parts.append(f"限电恢复事件{alarm_stats.energy_limit_recovery}次")
+        remarks += "限电相关事件: " + "，".join(event_parts)
+
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
 
@@ -443,7 +469,9 @@ def generate_summary(start_date: str, end_date: str) -> DailyReportSummaryRespon
             report.alarm_stats.wind_speed_warning +
             report.alarm_stats.wind_speed_shutdown +
             report.alarm_stats.energy_quota_warning +
-            report.alarm_stats.energy_quota_exceeded
+            report.alarm_stats.energy_quota_exceeded +
+            report.alarm_stats.energy_forecast_exceeded +
+            report.alarm_stats.energy_limit_recovery
         )
         s["total_freezes"] += report.freeze_lock_stats.freeze_count
         s["total_locks"] += report.freeze_lock_stats.lock_count

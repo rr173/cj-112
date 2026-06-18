@@ -6,6 +6,7 @@ from models import (
     EnergyAlarmLevel,
     EnergyMeterReport,
     EnergyQuotaUpdateRequest,
+    EnergyLimitRemoveRequest,
 )
 from energy_monitor import (
     process_energy_meter_report,
@@ -16,6 +17,9 @@ from energy_monitor import (
     update_energy_quota,
     get_energy_ranking,
     get_energy_stats,
+    get_limit_list,
+    get_forecast_detail,
+    manually_remove_crane_from_limit_list,
 )
 from collision import cranes_config
 
@@ -46,6 +50,13 @@ def api_report_energy(report: EnergyMeterReport):
                 "code": 3,
                 "code_type": "ENERGY_QUOTA_WARNING",
                 "message": "能耗数据已记录，触发能耗预警(黄色)",
+                **result,
+            }
+        elif alarm.alarm_level == EnergyAlarmLevel.FORECAST:
+            return {
+                "code": 4,
+                "code_type": "ENERGY_FORECAST_EXCEEDED",
+                "message": "能耗数据已记录，触发能耗预测超标告警，塔吊已加入限电名单",
                 **result,
             }
 
@@ -133,3 +144,40 @@ def api_get_energy_ranking():
 @router.get("/stats", summary="查询能耗监测统计信息")
 def api_get_energy_stats():
     return get_energy_stats()
+
+
+@router.get("/limit-list", summary="查询当前能耗预测超标的限电名单")
+def api_get_limit_list():
+    limit_list = get_limit_list()
+    return {
+        "total": len(limit_list),
+        "limit_list": limit_list,
+    }
+
+
+@router.get("/forecast/{crane_id}", summary="查询某台塔吊的能耗预测详情")
+def api_get_forecast_detail(crane_id: str):
+    if crane_id not in cranes_config:
+        raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 不存在")
+
+    detail = get_forecast_detail(crane_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 预测详情不存在")
+
+    return detail
+
+
+@router.post("/limit-list/remove", summary="手动从限电名单移除塔吊(管理员覆盖)")
+def api_remove_from_limit_list(request: EnergyLimitRemoveRequest):
+    if request.crane_id not in cranes_config:
+        raise HTTPException(status_code=404, detail=f"塔吊 {request.crane_id} 不存在")
+
+    try:
+        result = manually_remove_crane_from_limit_list(
+            crane_id=request.crane_id,
+            operator=request.operator,
+            reason=request.reason,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

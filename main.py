@@ -353,6 +353,8 @@ def health_check():
 
     energy_warning_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_QUOTA_WARNING)
     energy_exceeded_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_QUOTA_EXCEEDED)
+    energy_forecast_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_FORECAST_EXCEEDED)
+    energy_limit_recovery_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_LIMIT_RECOVERY)
 
     return {
         "status": "ok",
@@ -368,6 +370,8 @@ def health_check():
             "wind_speed_shutdown": wind_shutdown_alarms,
             "energy_quota_warning": energy_warning_alarms,
             "energy_quota_exceeded": energy_exceeded_alarms,
+            "energy_forecast_exceeded": energy_forecast_alarms,
+            "energy_limit_recovery": energy_limit_recovery_alarms,
         },
         "locked_cranes": sum(1 for l in cranes_lock_status.values() if l.is_locked),
         "frozen_cranes": frozen_cranes,
