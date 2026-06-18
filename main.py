@@ -31,6 +31,7 @@ from routes_inspection import router as inspection_router
 from routes_cooperative import router as cooperative_router
 from routes_load_moment import router as load_moment_router
 from routes_wind_speed import router as wind_speed_router
+from routes_energy import router as energy_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -39,6 +40,7 @@ from path_planner import init_path_planner
 from inspection import init_inspection_module, check_overdue_hazards
 from load_moment_monitor import init_load_moment_monitor_module
 from wind_speed_monitor import init_wind_speed_monitor_module
+from energy_monitor import init_energy_monitor_module, check_and_reset_daily
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -54,11 +56,13 @@ app.include_router(inspection_router)
 app.include_router(cooperative_router)
 app.include_router(load_moment_router)
 app.include_router(wind_speed_router)
+app.include_router(energy_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
 _maintenance_scheduler_thread: threading.Thread = None
 _inspection_scheduler_thread: threading.Thread = None
+_energy_reset_scheduler_thread: threading.Thread = None
 _scheduler_running = False
 
 
@@ -126,6 +130,31 @@ def _inspection_scheduler_loop():
         time.sleep(300)
 
 
+def _get_seconds_to_midnight() -> float:
+    now = datetime.now()
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (tomorrow - now).total_seconds()
+
+
+def _energy_reset_scheduler_loop():
+    global _scheduler_running
+    _scheduler_running = True
+    while _scheduler_running:
+        wait_seconds = _get_seconds_to_midnight()
+        print(f"[能耗零点重置] 距离下次零点重置还有 {wait_seconds:.0f} 秒")
+        time.sleep(min(wait_seconds, 60))
+        if not _scheduler_running:
+            break
+        now = datetime.now()
+        if now.hour == 0 and now.minute == 0:
+            try:
+                check_and_reset_daily()
+                print(f"[能耗零点重置] 零点重置完成")
+            except Exception as e:
+                print(f"[能耗零点重置] 零点重置失败: {e}")
+            time.sleep(65)
+
+
 @app.on_event("startup")
 def init_cranes():
     preset_cranes = [
@@ -187,6 +216,7 @@ def init_cranes():
     init_cooperative_lift_module()
     init_load_moment_monitor_module()
     init_wind_speed_monitor_module()
+    init_energy_monitor_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -205,6 +235,12 @@ def init_cranes():
         _inspection_scheduler_thread = threading.Thread(target=_inspection_scheduler_loop, daemon=True)
         _inspection_scheduler_thread.start()
         print("[巡检定时任务] 已启动，每5分钟检查一次隐患超期情况")
+
+    global _energy_reset_scheduler_thread
+    if _energy_reset_scheduler_thread is None or not _energy_reset_scheduler_thread.is_alive():
+        _energy_reset_scheduler_thread = threading.Thread(target=_energy_reset_scheduler_loop, daemon=True)
+        _energy_reset_scheduler_thread.start()
+        print("[能耗零点重置] 已启动，每天零点自动重置所有塔吊当日能耗数据")
 
 
 @app.on_event("shutdown")
@@ -311,6 +347,13 @@ def health_check():
     wind_stats = get_wind_stats()
     total_wind_records = sum(len(records) for records in cranes_wind_records.values())
 
+    from energy_monitor import get_energy_stats, cranes_energy_records
+    energy_stats = get_energy_stats()
+    total_energy_records = sum(len(records) for records in cranes_energy_records.values())
+
+    energy_warning_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_QUOTA_WARNING)
+    energy_exceeded_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_QUOTA_EXCEEDED)
+
     return {
         "status": "ok",
         "service": "塔吊防碰撞联锁服务",
@@ -323,6 +366,8 @@ def health_check():
             "load_moment_warning": moment_alarms,
             "wind_speed_warning": wind_warning_alarms,
             "wind_speed_shutdown": wind_shutdown_alarms,
+            "energy_quota_warning": energy_warning_alarms,
+            "energy_quota_exceeded": energy_exceeded_alarms,
         },
         "locked_cranes": sum(1 for l in cranes_lock_status.values() if l.is_locked),
         "frozen_cranes": frozen_cranes,
@@ -377,6 +422,10 @@ def health_check():
         "wind_speed_stats": {
             "total_wind_records_cached": total_wind_records,
             **wind_stats,
+        },
+        "energy_stats": {
+            "total_meter_records_cached": total_energy_records,
+            **energy_stats,
         },
         "timestamp": time.time(),
     }

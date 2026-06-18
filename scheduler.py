@@ -90,6 +90,19 @@ def _find_best_crane(lift_x: float, lift_y: float,
     if not candidates:
         return None
 
+    try:
+        from energy_monitor import is_crane_energy_over_limit, get_crane_energy_over_limit_amount
+        non_over_limit = [cid for cid in candidates if not is_crane_energy_over_limit(cid)]
+        over_limit = [cid for cid in candidates if is_crane_energy_over_limit(cid)]
+
+        if non_over_limit:
+            candidates = non_over_limit
+        elif over_limit:
+            over_limit.sort(key=lambda cid: get_crane_energy_over_limit_amount(cid))
+            return over_limit[0]
+    except ImportError:
+        pass
+
     priority_weight = PRIORITY_WEIGHT.get(priority, 2)
 
     def sort_key(cid):

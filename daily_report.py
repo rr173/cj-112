@@ -119,6 +119,10 @@ def count_alarms(crane_id: str, start_ts: float, end_ts: float) -> AlarmStats:
                     stats.wind_speed_warning += 1
                 elif alarm.alarm_type == AlarmType.WIND_SPEED_SHUTDOWN:
                     stats.wind_speed_shutdown += 1
+                elif alarm.alarm_type == AlarmType.ENERGY_QUOTA_WARNING:
+                    stats.energy_quota_warning += 1
+                elif alarm.alarm_type == AlarmType.ENERGY_QUOTA_EXCEEDED:
+                    stats.energy_quota_exceeded += 1
 
     return stats
 
@@ -237,6 +241,13 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         from models import InspectionDailyStats
         inspection_stats = InspectionDailyStats()
 
+    try:
+        from energy_monitor import get_energy_daily_stats
+        energy_stats = get_energy_daily_stats(crane_id, start_ts, end_ts)
+    except ImportError:
+        from models import EnergyDailyStats
+        energy_stats = EnergyDailyStats()
+
     work_duration = 0.0
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
@@ -263,6 +274,21 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
             remarks += " | "
         remarks += "当日未完成安全巡检"
 
+    if energy_stats.over_limit:
+        if remarks:
+            remarks += " | "
+        remarks += "当日能耗超限"
+    elif energy_stats.total_energy_kwh > 0:
+        if remarks:
+            remarks += " | "
+        quota_kwh = 500.0
+        try:
+            from energy_monitor import cranes_quota_kwh, _default_quota_kwh
+            quota_kwh = cranes_quota_kwh.get(crane_id, _default_quota_kwh)
+        except ImportError:
+            pass
+        remarks += f"当日累计能耗{energy_stats.total_energy_kwh:.2f} kWh，配额{quota_kwh:.0f} kWh"
+
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
 
@@ -284,6 +310,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         token_stats=token_stats,
         maintenance_stats=maintenance_stats,
         inspection_stats=inspection_stats,
+        energy_stats=energy_stats,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,
@@ -414,7 +441,9 @@ def generate_summary(start_date: str, end_date: str) -> DailyReportSummaryRespon
             report.alarm_stats.trolley_overspeed +
             report.alarm_stats.load_moment_warning +
             report.alarm_stats.wind_speed_warning +
-            report.alarm_stats.wind_speed_shutdown
+            report.alarm_stats.wind_speed_shutdown +
+            report.alarm_stats.energy_quota_warning +
+            report.alarm_stats.energy_quota_exceeded
         )
         s["total_freezes"] += report.freeze_lock_stats.freeze_count
         s["total_locks"] += report.freeze_lock_stats.lock_count

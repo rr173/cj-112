@@ -70,6 +70,8 @@ class AlarmType(str, Enum):
     LOAD_MOMENT_WARNING = "LOAD_MOMENT_WARNING"
     WIND_SPEED_WARNING = "WIND_SPEED_WARNING"
     WIND_SPEED_SHUTDOWN = "WIND_SPEED_SHUTDOWN"
+    ENERGY_QUOTA_WARNING = "ENERGY_QUOTA_WARNING"
+    ENERGY_QUOTA_EXCEEDED = "ENERGY_QUOTA_EXCEEDED"
 
 
 class WindAlarmLevel(str, Enum):
@@ -386,6 +388,8 @@ class AlarmStats(BaseModel):
     load_moment_warning: int = 0
     wind_speed_warning: int = 0
     wind_speed_shutdown: int = 0
+    energy_quota_warning: int = 0
+    energy_quota_exceeded: int = 0
 
 
 class FreezeLockStats(BaseModel):
@@ -410,6 +414,15 @@ class InspectionDailyStats(BaseModel):
     overdue_hazards: int = 0
 
 
+class EnergyDailyStats(BaseModel):
+    total_energy_kwh: float = 0.0
+    peak_power_kw: float = 0.0
+    avg_power_kw: float = 0.0
+    yellow_alarm_count: int = 0
+    red_alarm_count: int = 0
+    over_limit: bool = False
+
+
 class DailyReport(BaseModel):
     report_id: str
     crane_id: str
@@ -424,6 +437,7 @@ class DailyReport(BaseModel):
     token_stats: TokenStats = TokenStats()
     maintenance_stats: MaintenanceDailyStats = MaintenanceDailyStats()
     inspection_stats: InspectionDailyStats = InspectionDailyStats()
+    energy_stats: EnergyDailyStats = EnergyDailyStats()
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
@@ -993,3 +1007,58 @@ class RealtimeLoadStatus(BaseModel):
 class EnvelopeUpdateRequest(BaseModel):
     crane_id: str = Field(description="塔吊ID")
     envelope_points: List[LoadMomentEnvelopePoint] = Field(description="力矩包络曲线采样点列表，至少5个点，按变幅距离升序排列")
+
+
+class EnergyAlarmLevel(str, Enum):
+    YELLOW = "YELLOW"
+    RED = "RED"
+
+
+class EnergyMeterReport(BaseModel):
+    crane_id: str = Field(description="塔吊ID")
+    instantaneous_power_kw: float = Field(description="瞬时功率(千瓦)")
+    cumulative_energy_kwh: float = Field(description="累计电量(千瓦时)")
+    sensor_timestamp: float = Field(description="电表上报时间戳(Unix秒)")
+
+
+class EnergyMeterRecord(BaseModel):
+    crane_id: str
+    instantaneous_power_kw: float
+    cumulative_energy_kwh: float
+    sensor_timestamp: float
+    received_at: float
+    datetime_str: str
+
+
+class EnergyAlarmEvent(BaseModel):
+    alarm_id: str
+    alarm_type: AlarmType
+    alarm_level: EnergyAlarmLevel
+    crane_id: str
+    timestamp: float
+    datetime_str: str
+    cumulative_energy_kwh: float
+    quota_kwh: float
+    quota_usage_ratio: float
+    message: str
+    details: Dict = {}
+
+
+class EnergyCraneStatus(BaseModel):
+    crane_id: str
+    instantaneous_power_kw: Optional[float] = None
+    daily_cumulative_kwh: float = 0.0
+    quota_kwh: float = 500.0
+    quota_remaining_kwh: float = 500.0
+    quota_usage_ratio: float = 0.0
+    efficiency_ratio: Optional[float] = None
+    is_over_limit: bool = False
+    latest_sensor_timestamp: Optional[float] = None
+    latest_datetime_str: Optional[str] = None
+    current_work_order_id: Optional[str] = None
+    current_work_weight_tons: Optional[float] = None
+
+
+class EnergyQuotaUpdateRequest(BaseModel):
+    crane_id: Optional[str] = Field(default=None, description="塔吊ID，不指定则更新全局默认配额")
+    daily_quota_kwh: float = Field(description="每日能耗配额(千瓦时)")
