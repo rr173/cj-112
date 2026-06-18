@@ -302,7 +302,24 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         if energy_stats.was_in_limit_list:
             limit_parts.append("曾进入限电名单")
         if energy_stats.limit_recovery_count > 0:
-            limit_parts.append(f"限电恢复{energy_stats.limit_recovery_count}次")
+            try:
+                from energy_monitor import cranes_limit_history
+                today_leaves = [e for e in cranes_limit_history
+                                if e.get("crane_id") == crane_id and e.get("action") == "LEAVE"
+                                and e.get("date") == date_str]
+                manual_recoveries = sum(1 for e in today_leaves if e.get("is_manual"))
+                auto_recoveries = energy_stats.limit_recovery_count - manual_recoveries
+                recovery_desc_parts = []
+                if auto_recoveries > 0:
+                    recovery_desc_parts.append(f"自动恢复{auto_recoveries}次")
+                if manual_recoveries > 0:
+                    recovery_desc_parts.append(f"管理员手动解除{manual_recoveries}次")
+                if recovery_desc_parts:
+                    limit_parts.append("限电恢复(" + "，".join(recovery_desc_parts) + ")")
+                else:
+                    limit_parts.append(f"限电恢复{energy_stats.limit_recovery_count}次")
+            except ImportError:
+                limit_parts.append(f"限电恢复{energy_stats.limit_recovery_count}次")
         remarks += "限电情况: " + "，".join(limit_parts)
 
     if alarm_stats.energy_forecast_exceeded > 0 or alarm_stats.energy_limit_recovery > 0:

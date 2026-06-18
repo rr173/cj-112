@@ -20,6 +20,7 @@ from energy_monitor import (
     get_limit_list,
     get_forecast_detail,
     manually_remove_crane_from_limit_list,
+    get_manual_override_today,
 )
 from collision import cranes_config
 
@@ -164,7 +165,11 @@ def api_get_forecast_detail(crane_id: str):
     if not detail:
         raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 预测详情不存在")
 
-    return detail
+    result = detail.model_dump()
+    manual_override = get_manual_override_today(crane_id)
+    if manual_override:
+        result["manual_override"] = manual_override
+    return result
 
 
 @router.post("/limit-list/remove", summary="手动从限电名单移除塔吊(管理员覆盖)")
