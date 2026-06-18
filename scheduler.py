@@ -51,6 +51,12 @@ def can_crane_cover(crane_id: str, lift_x: float, lift_y: float,
         return False
     if not can_crane_reach_point(crane_id, drop_x, drop_y):
         return False
+    try:
+        from cooperative_lift import is_crane_in_active_cooperative_task
+        if is_crane_in_active_cooperative_task(crane_id):
+            return False
+    except ImportError:
+        pass
     return True
 
 
@@ -101,6 +107,12 @@ def _build_failure_reason(lift_x: float, lift_y: float,
             issues.append("无法覆盖起吊点")
         if not can_crane_reach_point(crane_id, drop_x, drop_y):
             issues.append("无法覆盖落点")
+        try:
+            from cooperative_lift import is_crane_in_active_cooperative_task
+            if is_crane_in_active_cooperative_task(crane_id):
+                issues.append("正在参与协同吊装任务")
+        except ImportError:
+            pass
         if issues:
             reasons.append(f"{crane_id}({config.name}): {'; '.join(issues)}")
 
@@ -194,6 +206,13 @@ def manually_assign_order(order_id: str, crane_id: str) -> Dict:
 
     if crane_id not in cranes_config:
         return {"error": f"塔吊 {crane_id} 不存在"}
+
+    try:
+        from cooperative_lift import is_crane_in_active_cooperative_task
+        if is_crane_in_active_cooperative_task(crane_id):
+            return {"error": f"塔吊 {crane_id} 正在参与协同吊装任务，无法分配普通工单"}
+    except ImportError:
+        pass
 
     if not can_crane_cover(crane_id, order.lift_x, order.lift_y,
                            order.drop_x, order.drop_y, order.weight):

@@ -765,3 +765,90 @@ class CraneHazardStats(BaseModel):
     closed_count: int = 0
     overdue_count: int = 0
     avg_close_hours: float = 0.0
+
+
+class CooperativeLiftStatus(str, Enum):
+    PENDING_READY = "PENDING_READY"
+    SYNCHRONIZING = "SYNCHRONIZING"
+    EXECUTING = "EXECUTING"
+    COMPLETED = "COMPLETED"
+    ABORTED = "ABORTED"
+
+
+class CraneLiftAssignment(BaseModel):
+    crane_id: str
+    hook_offset_x: float = Field(description="挂点相对构件重心的X方向偏移距离(米)")
+    hook_offset_y: float = Field(description="挂点相对构件重心的Y方向偏移距离(米)")
+    load_ratio: float = Field(description="承担的载荷比例(0-1之间, 如0.6表示60%)")
+
+
+class ComponentParams(BaseModel):
+    weight: float = Field(description="构件总重量(吨)")
+    length: float = Field(description="构件长度(米)")
+    center_of_gravity_offset_x: float = Field(default=0.0, description="重心X方向偏移量(米)")
+    center_of_gravity_offset_y: float = Field(default=0.0, description="重心Y方向偏移量(米)")
+
+
+class CooperativeLiftCreate(BaseModel):
+    component: ComponentParams
+    crane_assignments: List[CraneLiftAssignment] = Field(description="参与塔吊及挂点配置, 至少2台")
+    initiator: str = Field(description="任务发起人")
+    lift_x: float = Field(description="起吊点X坐标(米)")
+    lift_y: float = Field(description="起吊点Y坐标(米)")
+    drop_x: float = Field(description="落点X坐标(米)")
+    drop_y: float = Field(description="落点Y坐标(米)")
+    estimated_duration: float = Field(description="预计耗时(分钟)")
+    height_diff_threshold: float = Field(default=0.5, description="允许的吊钩高度差阈值(米), 默认0.5米")
+    height_diff_duration_threshold: float = Field(default=3.0, description="高度差超限持续时间阈值(秒), 默认3秒")
+
+
+class CooperativeLiftReadyConfirm(BaseModel):
+    crane_id: str
+    operator_id: str
+
+
+class CooperativeLiftSyncAck(BaseModel):
+    crane_id: str
+    operator_id: str
+
+
+class CooperativeLiftCompleteConfirm(BaseModel):
+    initiator: str
+
+
+class HeightDesyncAlarm(BaseModel):
+    alarm_id: str
+    task_id: str
+    timestamp: float
+    datetime_str: str
+    crane_a_id: str
+    crane_b_id: str
+    height_diff: float
+    threshold: float
+    duration: float
+
+
+class CooperativeLiftTask(BaseModel):
+    task_id: str
+    component: ComponentParams
+    crane_assignments: List[CraneLiftAssignment]
+    initiator: str
+    lift_x: float
+    lift_y: float
+    drop_x: float
+    drop_y: float
+    estimated_duration: float
+    height_diff_threshold: float
+    height_diff_duration_threshold: float
+    status: CooperativeLiftStatus = CooperativeLiftStatus.PENDING_READY
+    created_at: float
+    updated_at: float
+    ready_cranes: List[str] = []
+    sync_command_sent_at: Optional[float] = None
+    sync_acked_cranes: List[str] = []
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    aborted_at: Optional[float] = None
+    abort_reason: Optional[str] = None
+    height_desync_alarms: List[HeightDesyncAlarm] = []
+    locked_cranes: List[str] = []

@@ -28,6 +28,7 @@ from routes_maintenance import router as maintenance_router
 from routes_operator import router as operator_router
 from routes_path import router as path_router
 from routes_inspection import router as inspection_router
+from routes_cooperative import router as cooperative_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -46,6 +47,7 @@ app.include_router(maintenance_router)
 app.include_router(operator_router)
 app.include_router(path_router)
 app.include_router(inspection_router)
+app.include_router(cooperative_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -175,6 +177,8 @@ def init_cranes():
     init_operator_module()
     init_path_planner()
     init_inspection_module()
+    from cooperative_lift import init_cooperative_lift_module
+    init_cooperative_lift_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -278,6 +282,17 @@ def health_check():
     closed_hazards = sum(1 for h in _hazards.values() if h.status == _HazardStatus.CLOSED)
     overdue_hazards = sum(1 for h in _hazards.values() if h.is_overdue)
 
+    from cooperative_lift import (
+        cooperative_tasks as _cooperative_tasks,
+        CooperativeLiftStatus as _CoopStatus,
+    )
+    total_coop_tasks = len(_cooperative_tasks)
+    pending_ready_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.PENDING_READY)
+    synchronizing_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.SYNCHRONIZING)
+    executing_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.EXECUTING)
+    completed_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.COMPLETED)
+    aborted_coop = sum(1 for t in _cooperative_tasks.values() if t.status == _CoopStatus.ABORTED)
+
     return {
         "status": "ok",
         "service": "塔吊防碰撞联锁服务",
@@ -326,6 +341,14 @@ def health_check():
             "review_hazards": review_hazards,
             "closed_hazards": closed_hazards,
             "overdue_hazards": overdue_hazards,
+        },
+        "cooperative_lift_stats": {
+            "total_tasks": total_coop_tasks,
+            "pending_ready": pending_ready_coop,
+            "synchronizing": synchronizing_coop,
+            "executing": executing_coop,
+            "completed": completed_coop,
+            "aborted": aborted_coop,
         },
         "timestamp": time.time(),
     }

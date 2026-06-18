@@ -154,6 +154,11 @@ def lock_crane(crane_id: str, reason: str):
             add_freeze_lock_record(crane_id, "LOCK", "START", time.time(), reason)
         except ImportError:
             pass
+        try:
+            from cooperative_lift import handle_crane_lock_for_cooperative
+            handle_crane_lock_for_cooperative(crane_id, reason)
+        except ImportError:
+            pass
 
 
 def unlock_crane_record(crane_id: str):

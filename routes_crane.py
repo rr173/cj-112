@@ -231,6 +231,12 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
                 lock_crane(other_id, f"与塔吊{status.crane_id}距离过近触发防碰撞锁定")
 
     try:
+        from cooperative_lift import process_crane_status_for_cooperative
+        coop_results = process_crane_status_for_cooperative(status.crane_id)
+    except ImportError:
+        coop_results = []
+
+    try:
         from inspection import check_overdue_hazards, get_crane_overdue_hazard_warnings
         check_overdue_hazards()
         overdue_warnings = get_crane_overdue_hazard_warnings(status.crane_id)
@@ -238,8 +244,12 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         overdue_warnings = []
 
     message = "状态上报成功"
+    if coop_results:
+        aborted_count = sum(1 for r in coop_results if r.get("aborted"))
+        if aborted_count > 0:
+            message = f"状态上报成功。注意：有 {aborted_count} 个协同吊装任务因高度失同步已中止"
     if overdue_warnings:
-        message = f"状态上报成功。注意：存在 {len(overdue_warnings)} 条超期未关闭隐患"
+        message = f"{message}。注意：存在 {len(overdue_warnings)} 条超期未关闭隐患"
 
     response = {
         "code": 0,
@@ -258,6 +268,8 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         "alarms_triggered": len(triggered_alarms),
         "alarm_details": triggered_alarms,
     }
+    if coop_results:
+        response["cooperative_lift_results"] = coop_results
     if overdue_warnings:
         response["overdue_hazard_warnings"] = overdue_warnings
     return response
