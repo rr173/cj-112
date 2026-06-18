@@ -10,7 +10,7 @@ from models import (
     CraneLiftAssignment,
     HeightDesyncAlarm,
 )
-from collision import cranes_config, lock_crane, cranes_current_status
+from collision import cranes_config, lock_crane, cranes_current_status, can_crane_reach_point, cranes_lock_status
 
 
 cooperative_tasks: Dict[str, CooperativeLiftTask] = {}
@@ -100,11 +100,40 @@ def create_cooperative_task(create: CooperativeLiftCreate) -> Dict:
             busy_cranes.append({"crane_id": cid, "reason": "存在未完成的普通工单"})
         elif _has_active_cooperative_task(cid):
             busy_cranes.append({"crane_id": cid, "reason": "正在参与其他协同吊装任务"})
+        elif cranes_lock_status.get(cid) and cranes_lock_status[cid].is_locked:
+            lock_reason = cranes_lock_status[cid].locked_reason or "未知原因"
+            busy_cranes.append({"crane_id": cid, "reason": f"塔吊处于锁定状态({lock_reason})"})
 
     if busy_cranes:
         return {
-            "error": "部分塔吊当前有未完成任务，无法加入协同吊装",
+            "error": "部分塔吊当前有未完成任务或处于锁定状态，无法加入协同吊装",
             "busy_cranes": busy_cranes,
+        }
+
+    unreachable_cranes = []
+    for assignment in create.crane_assignments:
+        cid = assignment.crane_id
+        config = cranes_config[cid]
+        issues = []
+        if not can_crane_reach_point(cid, create.lift_x, create.lift_y):
+            issues.append("无法到达起吊点")
+        if not can_crane_reach_point(cid, create.drop_x, create.drop_y):
+            issues.append("无法到达落点")
+        if issues:
+            unreachable_cranes.append({
+                "crane_id": cid,
+                "crane_name": config.name,
+                "issues": issues,
+                "lift_x": create.lift_x,
+                "lift_y": create.lift_y,
+                "drop_x": create.drop_x,
+                "drop_y": create.drop_y,
+            })
+
+    if unreachable_cranes:
+        return {
+            "error": "部分塔吊无法到达起吊点或落点",
+            "unreachable_cranes": unreachable_cranes,
         }
 
     now = time.time()
@@ -141,6 +170,26 @@ def create_cooperative_task(create: CooperativeLiftCreate) -> Dict:
     }
 
 
+def _validate_operator_for_crane(operator_id: str, crane_id: str) -> Optional[str]:
+    try:
+        from operator_training import can_operator_operate_crane, operator_crane_bindings
+    except ImportError:
+        return None
+
+    check = can_operator_operate_crane(operator_id, crane_id)
+    if not check.get("can_operate"):
+        return check.get("reason", "操作员无操作资格")
+
+    bound_crane = operator_crane_bindings.get(operator_id)
+    if bound_crane != crane_id:
+        if bound_crane:
+            return f"操作员当前绑定塔吊 {bound_crane}，未绑定塔吊 {crane_id}"
+        else:
+            return f"操作员未绑定任何塔吊，无法操作塔吊 {crane_id}"
+
+    return None
+
+
 def confirm_ready(task_id: str, crane_id: str, operator_id: str) -> Dict:
     task = cooperative_tasks.get(task_id)
     if not task:
@@ -152,6 +201,10 @@ def confirm_ready(task_id: str, crane_id: str, operator_id: str) -> Dict:
     assignment_crane_ids = [a.crane_id for a in task.crane_assignments]
     if crane_id not in assignment_crane_ids:
         return {"error": f"塔吊 {crane_id} 未参与此协同吊装任务"}
+
+    op_error = _validate_operator_for_crane(operator_id, crane_id)
+    if op_error:
+        return {"error": f"操作员校验失败: {op_error}"}
 
     if crane_id in task.ready_cranes:
         return {
@@ -195,6 +248,10 @@ def ack_sync_command(task_id: str, crane_id: str, operator_id: str) -> Dict:
     assignment_crane_ids = [a.crane_id for a in task.crane_assignments]
     if crane_id not in assignment_crane_ids:
         return {"error": f"塔吊 {crane_id} 未参与此协同吊装任务"}
+
+    op_error = _validate_operator_for_crane(operator_id, crane_id)
+    if op_error:
+        return {"error": f"操作员校验失败: {op_error}"}
 
     if crane_id in task.sync_acked_cranes:
         return {
