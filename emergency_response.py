@@ -360,7 +360,7 @@ def _check_condition_match(
         for a in relevant_alarms:
             type_counts[a.alarm_type] = type_counts.get(a.alarm_type, 0) + 1
         for atype in condition.alarm_types:
-            if type_counts.get(atype, 0) < condition.min_count:
+            if type_counts.get(atype, 0) < 1:
                 matched = False
                 break
 
@@ -1315,12 +1315,47 @@ def check_auto_escalation() -> List[EmergencyEvent]:
                 if result:
                     escalated_events.append(result)
 
+    _sync_critical_affected_orders()
+
     return escalated_events
+
+
+def _sync_critical_affected_orders() -> None:
+    try:
+        from scheduler import work_orders, WorkOrderStatus
+    except ImportError:
+        return
+
+    active_critical_events = [
+        e for e in emergency_events.values()
+        if e.status == EmergencyEventStatus.HANDLING
+        and not e.is_drill
+        and e.emergency_level == EmergencyLevel.CRITICAL
+    ]
+    if not active_critical_events:
+        return
+
+    for order in work_orders.values():
+        if order.status != WorkOrderStatus.EXECUTING:
+            continue
+        for event in active_critical_events:
+            if event.event_id not in order.affected_by_emergency_event_ids:
+                order.affected_by_emergency_event_ids.append(event.event_id)
 
 
 def get_affected_work_orders() -> list:
     try:
-        from scheduler import work_orders
-        return [o for o in work_orders.values() if o.affected_by_emergency_event_ids]
+        from scheduler import work_orders, WorkOrderStatus
     except ImportError:
         return []
+
+    _sync_critical_affected_orders()
+
+    active_statuses = {
+        WorkOrderStatus.PENDING,
+        WorkOrderStatus.ASSIGNED,
+        WorkOrderStatus.EXECUTING,
+        WorkOrderStatus.SUSPENDED,
+    }
+    return [o for o in work_orders.values()
+            if o.affected_by_emergency_event_ids and o.status in active_statuses]
