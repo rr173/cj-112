@@ -16,6 +16,8 @@ from models import (
     WorkOrderStatus,
     EventType,
     CraneStatusRecord,
+    EmergencyDailyStats,
+    EmergencyLevel,
 )
 from collision import cranes_config, alarm_history
 from arbiter import arb_event_logs
@@ -252,6 +254,12 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         from models import EnergyDailyStats
         energy_stats = EnergyDailyStats()
 
+    try:
+        from emergency_response import get_emergency_daily_stats
+        emergency_stats = get_emergency_daily_stats(crane_id, start_ts, end_ts)
+    except ImportError:
+        emergency_stats = EmergencyDailyStats()
+
     work_duration = 0.0
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
@@ -332,6 +340,27 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
             event_parts.append(f"限电恢复事件{alarm_stats.energy_limit_recovery}次")
         remarks += "限电相关事件: " + "，".join(event_parts)
 
+    if emergency_stats.emergency_event_count > 0:
+        if remarks:
+            remarks += " | "
+        level_names = {
+            EmergencyLevel.GENERAL: "一般",
+            EmergencyLevel.SERIOUS: "严重",
+            EmergencyLevel.CRITICAL: "紧急",
+        }
+        highest_level_str = level_names.get(emergency_stats.highest_emergency_level, "未知") \
+            if emergency_stats.highest_emergency_level else "无"
+        level_parts = []
+        if emergency_stats.general_count > 0:
+            level_parts.append(f"一般{emergency_stats.general_count}次")
+        if emergency_stats.serious_count > 0:
+            level_parts.append(f"严重{emergency_stats.serious_count}次")
+        if emergency_stats.critical_count > 0:
+            level_parts.append(f"紧急{emergency_stats.critical_count}次")
+        remarks += (f"触发应急事件共{emergency_stats.emergency_event_count}次"
+                    f"(最高等级: {highest_level_str}, "
+                    + "，".join(level_parts) + ")")
+
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
 
@@ -354,6 +383,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         maintenance_stats=maintenance_stats,
         inspection_stats=inspection_stats,
         energy_stats=energy_stats,
+        emergency_stats=emergency_stats,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,

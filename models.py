@@ -430,6 +430,127 @@ class EnergyDailyStats(BaseModel):
     was_in_limit_list: bool = False
 
 
+class EmergencyLevel(str, Enum):
+    GENERAL = "GENERAL"
+    SERIOUS = "SERIOUS"
+    CRITICAL = "CRITICAL"
+
+
+class RuleScope(str, Enum):
+    SINGLE_CRANE = "SINGLE_CRANE"
+    ADJACENT_CRANES = "ADJACENT_CRANES"
+    ANY_CRANES = "ANY_CRANES"
+
+
+class CompositeAlarmRuleCondition(BaseModel):
+    alarm_types: List[AlarmType] = Field(description="需要同时出现的告警类型列表")
+    min_count: int = Field(default=1, description="该条件下最少需要的告警数量")
+    time_window_seconds: int = Field(description="时间窗口(秒), 在该窗口内的告警视为同时出现")
+
+
+class CompositeAlarmRuleCreate(BaseModel):
+    name: str = Field(description="规则名称")
+    description: str = Field(default="", description="规则描述")
+    scope: RuleScope = Field(description="规则适用范围: 单台/相邻/任意塔吊")
+    conditions: List[CompositeAlarmRuleCondition] = Field(description="触发条件列表, 所有条件同时满足才触发")
+    emergency_level: EmergencyLevel = Field(description="触发的应急等级")
+    enabled: bool = Field(default=True, description="是否启用")
+
+
+class CompositeAlarmRuleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, description="规则名称")
+    description: Optional[str] = Field(default=None, description="规则描述")
+    scope: Optional[RuleScope] = Field(default=None, description="规则适用范围")
+    conditions: Optional[List[CompositeAlarmRuleCondition]] = Field(default=None, description="触发条件列表")
+    emergency_level: Optional[EmergencyLevel] = Field(default=None, description="触发的应急等级")
+    enabled: Optional[bool] = Field(default=None, description="是否启用")
+
+
+class CompositeAlarmRule(BaseModel):
+    rule_id: str
+    name: str
+    description: str = ""
+    scope: RuleScope
+    conditions: List[CompositeAlarmRuleCondition]
+    emergency_level: EmergencyLevel
+    enabled: bool = True
+    created_at: float
+    updated_at: float
+
+
+class EmergencyActionType(str, Enum):
+    LOCK_CRANE = "LOCK_CRANE"
+    NOTIFY_SAFETY_OFFICER = "NOTIFY_SAFETY_OFFICER"
+    NOTIFY_PROJECT_MANAGER = "NOTIFY_PROJECT_MANAGER"
+    NOTIFY_OPERATOR = "NOTIFY_OPERATOR"
+    SUSPEND_WORK_ORDERS = "SUSPEND_WORK_ORDERS"
+    TRIGGER_BROADCAST = "TRIGGER_BROADCAST"
+
+
+class EmergencyActionStatus(str, Enum):
+    PENDING = "PENDING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
+class EmergencyActionExecution(BaseModel):
+    action_type: EmergencyActionType
+    target_crane_ids: List[str] = Field(default=[], description="动作目标塔吊ID列表(如锁定塔吊)")
+    status: EmergencyActionStatus = EmergencyActionStatus.PENDING
+    executed_at: Optional[float] = None
+    result_message: str = ""
+    details: Dict = {}
+
+
+class EmergencyEventStatus(str, Enum):
+    TRIGGERING = "TRIGGERING"
+    HANDLING = "HANDLING"
+    CLOSED = "CLOSED"
+
+
+class GenericAlarmSnapshot(BaseModel):
+    alarm_id: str
+    alarm_type: AlarmType
+    timestamp: float
+    datetime_str: str
+    crane_ids: List[str]
+    message: str
+    details: Dict = {}
+
+
+class EmergencyEvent(BaseModel):
+    event_id: str
+    rule_id: str
+    rule_name: str
+    emergency_level: EmergencyLevel
+    status: EmergencyEventStatus = EmergencyEventStatus.TRIGGERING
+    triggered_at: float
+    triggered_datetime_str: str
+    affected_crane_ids: List[str]
+    related_alarms: List[GenericAlarmSnapshot]
+    actions: List[EmergencyActionExecution] = []
+    handling_started_at: Optional[float] = None
+    closed_at: Optional[float] = None
+    closed_by: Optional[str] = None
+    close_reason: Optional[str] = None
+    handling_result: Optional[str] = None
+
+
+class EmergencyEventCloseRequest(BaseModel):
+    closed_by: str = Field(description="关闭人(安全员)")
+    handling_result: str = Field(description="处置结果")
+    close_reason: str = Field(description="关闭原因")
+
+
+class EmergencyDailyStats(BaseModel):
+    emergency_event_count: int = 0
+    highest_emergency_level: Optional[EmergencyLevel] = None
+    general_count: int = 0
+    serious_count: int = 0
+    critical_count: int = 0
+
+
 class DailyReport(BaseModel):
     report_id: str
     crane_id: str
@@ -445,6 +566,7 @@ class DailyReport(BaseModel):
     maintenance_stats: MaintenanceDailyStats = MaintenanceDailyStats()
     inspection_stats: InspectionDailyStats = InspectionDailyStats()
     energy_stats: EnergyDailyStats = EnergyDailyStats()
+    emergency_stats: EmergencyDailyStats = EmergencyDailyStats()
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""

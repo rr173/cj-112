@@ -32,6 +32,7 @@ from routes_cooperative import router as cooperative_router
 from routes_load_moment import router as load_moment_router
 from routes_wind_speed import router as wind_speed_router
 from routes_energy import router as energy_router
+from routes_emergency import router as emergency_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -41,6 +42,7 @@ from inspection import init_inspection_module, check_overdue_hazards
 from load_moment_monitor import init_load_moment_monitor_module
 from wind_speed_monitor import init_wind_speed_monitor_module
 from energy_monitor import init_energy_monitor_module, check_and_reset_daily
+from emergency_response import init_emergency_response_module, check_and_trigger_emergency
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -57,12 +59,14 @@ app.include_router(cooperative_router)
 app.include_router(load_moment_router)
 app.include_router(wind_speed_router)
 app.include_router(energy_router)
+app.include_router(emergency_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
 _maintenance_scheduler_thread: threading.Thread = None
 _inspection_scheduler_thread: threading.Thread = None
 _energy_reset_scheduler_thread: threading.Thread = None
+_emergency_scheduler_thread: threading.Thread = None
 _scheduler_running = False
 
 
@@ -155,6 +159,21 @@ def _energy_reset_scheduler_loop():
             time.sleep(65)
 
 
+def _emergency_scheduler_loop():
+    global _scheduler_running
+    _scheduler_running = True
+    while _scheduler_running:
+        try:
+            triggered = check_and_trigger_emergency()
+            if triggered:
+                for event in triggered:
+                    print(f"[应急响应定时检查] 触发应急事件: {event.event_id}, "
+                          f"等级: {event.emergency_level.value}, 规则: {event.rule_name}")
+        except Exception as e:
+            print(f"[应急响应定时检查] 执行异常: {e}")
+        time.sleep(10)
+
+
 @app.on_event("startup")
 def init_cranes():
     preset_cranes = [
@@ -217,6 +236,7 @@ def init_cranes():
     init_load_moment_monitor_module()
     init_wind_speed_monitor_module()
     init_energy_monitor_module()
+    init_emergency_response_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -241,6 +261,12 @@ def init_cranes():
         _energy_reset_scheduler_thread = threading.Thread(target=_energy_reset_scheduler_loop, daemon=True)
         _energy_reset_scheduler_thread.start()
         print("[能耗零点重置] 已启动，每天零点自动重置所有塔吊当日能耗数据")
+
+    global _emergency_scheduler_thread
+    if _emergency_scheduler_thread is None or not _emergency_scheduler_thread.is_alive():
+        _emergency_scheduler_thread = threading.Thread(target=_emergency_scheduler_loop, daemon=True)
+        _emergency_scheduler_thread.start()
+        print("[应急响应定时检查] 已启动，每10秒检查一次复合告警")
 
 
 @app.on_event("shutdown")
@@ -279,6 +305,11 @@ def health_check():
         hazards as _hazards,
         HazardStatus as _HazardStatus,
     )
+    from emergency_response import (
+        composite_alarm_rules,
+        emergency_events,
+    )
+    from models import EmergencyLevel, EmergencyEventStatus
     refresh_all_freeze_status()
     check_all_windows()
     check_overdue_hazards()
@@ -430,6 +461,17 @@ def health_check():
         "energy_stats": {
             "total_meter_records_cached": total_energy_records,
             **energy_stats,
+        },
+        "emergency_stats": {
+            "total_rules": len(composite_alarm_rules),
+            "enabled_rules": sum(1 for r in composite_alarm_rules.values() if r.enabled),
+            "total_events": len(emergency_events),
+            "active_events": sum(1 for e in emergency_events.values() if e.status != EmergencyEventStatus.CLOSED),
+            "handling_events": sum(1 for e in emergency_events.values() if e.status == EmergencyEventStatus.HANDLING),
+            "closed_events": sum(1 for e in emergency_events.values() if e.status == EmergencyEventStatus.CLOSED),
+            "general_events": sum(1 for e in emergency_events.values() if e.emergency_level == EmergencyLevel.GENERAL),
+            "serious_events": sum(1 for e in emergency_events.values() if e.emergency_level == EmergencyLevel.SERIOUS),
+            "critical_events": sum(1 for e in emergency_events.values() if e.emergency_level == EmergencyLevel.CRITICAL),
         },
         "timestamp": time.time(),
     }

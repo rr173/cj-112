@@ -63,6 +63,12 @@ def can_crane_cover(crane_id: str, lift_x: float, lift_y: float,
             return False
     except ImportError:
         pass
+    try:
+        from emergency_response import is_crane_blocked_by_emergency
+        if is_crane_blocked_by_emergency(crane_id):
+            return False
+    except ImportError:
+        pass
     return True
 
 
@@ -153,6 +159,12 @@ def _build_failure_reason(lift_x: float, lift_y: float,
             from wind_speed_monitor import is_crane_wind_shutdown
             if is_crane_wind_shutdown(crane_id):
                 issues.append("处于风速停机状态")
+        except ImportError:
+            pass
+        try:
+            from emergency_response import is_crane_blocked_by_emergency
+            if is_crane_blocked_by_emergency(crane_id):
+                issues.append("存在未关闭应急事件，禁止分配新工单")
         except ImportError:
             pass
         if issues:
