@@ -288,6 +288,12 @@ def bind_operator_to_crane(crane_id: str, operator_id: str) -> Dict:
     )
     attendance_segments[crane_id].append(segment)
 
+    try:
+        from fatigue_monitor import init_operator_fatigue
+        init_operator_fatigue(operator_id, operator.name, crane_id, now)
+    except ImportError:
+        pass
+
     return {
         "success": True,
         "binding": binding,
@@ -307,6 +313,12 @@ def _unbind_operator_from_crane_internal(operator_id: str, crane_id: str, reason
             if seg.operator_id == operator_id and seg.is_current:
                 seg.end_time = now
                 seg.is_current = False
+
+        try:
+            from fatigue_monitor import reset_operator_fatigue
+            reset_operator_fatigue(operator_id)
+        except ImportError:
+            pass
 
 
 def unbind_operator_from_crane(crane_id: str, reason: str = "") -> Dict:
@@ -410,6 +422,12 @@ def shift_handover(crane_id: str, from_operator_id: str, to_operator_id: str, re
         is_current=True,
     )
     attendance_segments[crane_id].append(segment)
+
+    try:
+        from fatigue_monitor import init_operator_fatigue
+        init_operator_fatigue(to_operator_id, to_operator.name, crane_id, now)
+    except ImportError:
+        pass
 
     return {
         "success": True,

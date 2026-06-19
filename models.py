@@ -74,6 +74,10 @@ class AlarmType(str, Enum):
     ENERGY_QUOTA_EXCEEDED = "ENERGY_QUOTA_EXCEEDED"
     ENERGY_FORECAST_EXCEEDED = "ENERGY_FORECAST_EXCEEDED"
     ENERGY_LIMIT_RECOVERY = "ENERGY_LIMIT_RECOVERY"
+    FATIGUE_MILD_WARNING = "FATIGUE_MILD_WARNING"
+    FATIGUE_SEVERE_WARNING = "FATIGUE_SEVERE_WARNING"
+    FATIGUE_FORCED_SHIFTOVER = "FATIGUE_FORCED_SHIFTOVER"
+    FATIGUE_RECOVERY = "FATIGUE_RECOVERY"
 
 
 class WindAlarmLevel(str, Enum):
@@ -608,6 +612,7 @@ class DailyReport(BaseModel):
     energy_stats: EnergyDailyStats = EnergyDailyStats()
     emergency_stats: EmergencyDailyStats = EmergencyDailyStats()
     conflict_detection_stats: ConflictDetectionDailyStats = ConflictDetectionDailyStats()
+    operator_fatigue_stats: List["OperatorFatigueDailySummary"] = []
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
@@ -1406,6 +1411,71 @@ class ConflictDetectionRequest(BaseModel):
 class ConflictSuggestionAcceptRequest(BaseModel):
     accepted_by: str = Field(description="接受人(安全员)")
     remarks: Optional[str] = Field(default="", description="备注")
+
+
+class FatigueLevel(str, Enum):
+    NORMAL = "NORMAL"
+    MILD = "MILD"
+    SEVERE = "SEVERE"
+    FORCED_SHIFTOVER = "FORCED_SHIFTOVER"
+
+
+class FatigueConfig(BaseModel):
+    mild_fatigue_hours: float = Field(default=2.0, description="轻度疲劳阈值(小时)，连续作业超过则触发黄色提醒")
+    severe_fatigue_hours: float = Field(default=4.0, description="重度疲劳阈值(小时)，连续作业超过则触发橙色警告并限制新工单")
+    forced_shiftover_hours: float = Field(default=6.0, description="强制换班阈值(小时)，连续作业超过则锁定塔吊直到换班")
+    rest_reset_minutes: float = Field(default=15.0, description="休息重置阈值(分钟)，塔吊超过该时长无状态上报则视为休息并重置计时")
+
+
+class FatigueAlarmEvent(BaseModel):
+    alarm_id: str
+    alarm_type: AlarmType
+    alarm_level: FatigueLevel
+    operator_id: str
+    operator_name: str
+    crane_id: str
+    timestamp: float
+    datetime_str: str
+    continuous_work_seconds: float
+    threshold_hours: float
+    message: str
+    details: Dict = {}
+
+
+class FatigueOperatorStatus(BaseModel):
+    operator_id: str
+    operator_name: str
+    crane_id: Optional[str] = None
+    current_fatigue_level: FatigueLevel
+    continuous_work_seconds: float
+    last_status_report_at: Optional[float] = None
+    last_rest_at: Optional[float] = None
+    bound_at: Optional[float] = None
+    is_forced_shiftover: bool = False
+    forced_shiftover_at: Optional[float] = None
+
+
+class FatigueThresholdUpdateRequest(BaseModel):
+    mild_fatigue_hours: Optional[float] = Field(default=None, description="轻度疲劳阈值(小时)")
+    severe_fatigue_hours: Optional[float] = Field(default=None, description="重度疲劳阈值(小时)")
+    forced_shiftover_hours: Optional[float] = Field(default=None, description="强制换班阈值(小时)")
+    rest_reset_minutes: Optional[float] = Field(default=None, description="休息重置阈值(分钟)")
+
+
+class FatigueDailyStats(BaseModel):
+    operator_id: str
+    operator_name: str
+    max_continuous_work_seconds: float = 0.0
+    forced_shiftover_count: int = 0
+    mild_warning_count: int = 0
+    severe_warning_count: int = 0
+
+
+class OperatorFatigueDailySummary(BaseModel):
+    operator_id: str
+    operator_name: str
+    max_continuous_work_minutes: float = 0.0
+    forced_shiftover_count: int = 0
 
 
 

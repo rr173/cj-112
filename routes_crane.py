@@ -33,6 +33,7 @@ from anomaly_detector import (
 )
 from models import CraneStatusRecord
 from daily_report import add_status_report_to_history
+from fatigue_monitor import process_status_report_for_fatigue
 
 router = APIRouter(prefix="/api", tags=["塔吊状态"])
 
@@ -138,6 +139,9 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     add_status_report_to_history(history_record)
     add_status_to_window(status)
 
+    now = status.timestamp or time.time()
+    fatigue_result = process_status_report_for_fatigue(status.crane_id, now)
+
     if in_maintenance:
         try:
             from inspection import check_overdue_hazards, get_crane_overdue_hazard_warnings
@@ -163,10 +167,13 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
             "alarms_triggered": 0,
             "alarm_details": [],
             "energy_limit_hint": energy_limit_hint,
+            "fatigue": fatigue_result if fatigue_result.get("has_operator") else None,
         }
         if overdue_warnings:
             response["overdue_hazard_warnings"] = overdue_warnings
             response["message"] = f"状态上报成功（维保停机模式：已记录，已跳过碰撞检测和异常检测）。注意：存在 {len(overdue_warnings)} 条超期未关闭隐患"
+        if fatigue_result.get("alarm_triggered"):
+            response["message"] = f"{response['message']}。注意：{fatigue_result.get('message', '')}"
         return response
 
     rotation = normalize_angle(status.rotation_angle)
@@ -284,6 +291,8 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
             message = f"状态上报成功。注意：有 {aborted_count} 个协同吊装任务因高度失同步已中止"
     if overdue_warnings:
         message = f"{message}。注意：存在 {len(overdue_warnings)} 条超期未关闭隐患"
+    if fatigue_result.get("alarm_triggered"):
+        message = f"{message}。注意：{fatigue_result.get('message', '')}"
 
     response = {
         "code": 0,
@@ -302,11 +311,21 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         "alarms_triggered": len(triggered_alarms),
         "alarm_details": triggered_alarms,
         "energy_limit_hint": energy_limit_hint,
+        "fatigue": fatigue_result if fatigue_result.get("has_operator") else None,
     }
     if coop_results:
         response["cooperative_lift_results"] = coop_results
     if overdue_warnings:
         response["overdue_hazard_warnings"] = overdue_warnings
+
+    if fatigue_result.get("is_forced_shiftover"):
+        response["code"] = 1
+        response["forced_shiftover"] = True
+        response["fatigue_hint"] = (
+            f"操作员已连续作业 {fatigue_result.get('continuous_work_seconds', 0) / 3600:.1f} 小时，"
+            f"触发强制换班，请通过换班接口完成交接后恢复正常"
+        )
+
     return response
 
 

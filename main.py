@@ -34,6 +34,7 @@ from routes_wind_speed import router as wind_speed_router
 from routes_energy import router as energy_router
 from routes_emergency import router as emergency_router
 from routes_conflict import router as conflict_router
+from routes_fatigue import router as fatigue_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -63,6 +64,7 @@ app.include_router(wind_speed_router)
 app.include_router(energy_router)
 app.include_router(emergency_router)
 app.include_router(conflict_router)
+app.include_router(fatigue_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -249,6 +251,8 @@ def init_cranes():
     init_energy_monitor_module()
     init_emergency_response_module()
     init_conflict_scheduler_module()
+    from fatigue_monitor import init_fatigue_monitor_module
+    init_fatigue_monitor_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -394,10 +398,17 @@ def health_check():
     energy_stats = get_energy_stats()
     total_energy_records = sum(len(records) for records in cranes_energy_records.values())
 
+    from fatigue_monitor import get_fatigue_stats
+
     energy_warning_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_QUOTA_WARNING)
     energy_exceeded_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_QUOTA_EXCEEDED)
     energy_forecast_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_FORECAST_EXCEEDED)
     energy_limit_recovery_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.ENERGY_LIMIT_RECOVERY)
+
+    fatigue_mild_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.FATIGUE_MILD_WARNING)
+    fatigue_severe_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.FATIGUE_SEVERE_WARNING)
+    fatigue_forced_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.FATIGUE_FORCED_SHIFTOVER)
+    fatigue_recovery_alarms = sum(1 for a in alarm_history if a.alarm_type == AlarmType.FATIGUE_RECOVERY)
 
     return {
         "status": "ok",
@@ -415,6 +426,10 @@ def health_check():
             "energy_quota_exceeded": energy_exceeded_alarms,
             "energy_forecast_exceeded": energy_forecast_alarms,
             "energy_limit_recovery": energy_limit_recovery_alarms,
+            "fatigue_mild_warning": fatigue_mild_alarms,
+            "fatigue_severe_warning": fatigue_severe_alarms,
+            "fatigue_forced_shiftover": fatigue_forced_alarms,
+            "fatigue_recovery": fatigue_recovery_alarms,
         },
         "locked_cranes": sum(1 for l in cranes_lock_status.values() if l.is_locked),
         "frozen_cranes": frozen_cranes,
@@ -484,6 +499,9 @@ def health_check():
             "general_events": sum(1 for e in emergency_events.values() if e.emergency_level == EmergencyLevel.GENERAL),
             "serious_events": sum(1 for e in emergency_events.values() if e.emergency_level == EmergencyLevel.SERIOUS),
             "critical_events": sum(1 for e in emergency_events.values() if e.emergency_level == EmergencyLevel.CRITICAL),
+        },
+        "fatigue_stats": {
+            **get_fatigue_stats(),
         },
         "timestamp": time.time(),
     }

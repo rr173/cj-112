@@ -295,6 +295,46 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
     except ImportError:
         emergency_stats = EmergencyDailyStats()
 
+    try:
+        from fatigue_monitor import get_fatigue_alarm_history, get_daily_fatigue_stats, FatigueLevel
+        from models import OperatorFatigueDailySummary
+        from operator_training import crane_operator_bindings, attendance_segments
+
+        day_fatigue_stats = get_daily_fatigue_stats(date_str)
+
+        operator_fatigue_list = []
+        segments = attendance_segments.get(crane_id, [])
+        day_operators = set()
+        for seg in segments:
+            seg_start = seg.start_time
+            seg_end = seg.end_time if seg.end_time else time.time()
+            if seg_end >= start_ts and seg_start < end_ts:
+                day_operators.add(seg.operator_id)
+
+        for op_id in day_operators:
+            op_stats = day_fatigue_stats.get(op_id)
+            if op_stats:
+                summary = OperatorFatigueDailySummary(
+                    operator_id=op_stats.operator_id,
+                    operator_name=op_stats.operator_name,
+                    max_continuous_work_minutes=round(op_stats.max_continuous_work_seconds / 60, 1),
+                    forced_shiftover_count=op_stats.forced_shiftover_count,
+                )
+                operator_fatigue_list.append(summary)
+            else:
+                from operator_training import operators as _operators
+                op = _operators.get(op_id)
+                if op:
+                    summary = OperatorFatigueDailySummary(
+                        operator_id=op_id,
+                        operator_name=op.name,
+                        max_continuous_work_minutes=0.0,
+                        forced_shiftover_count=0,
+                    )
+                    operator_fatigue_list.append(summary)
+    except ImportError:
+        operator_fatigue_list = []
+
     conflict_detection_stats = count_conflict_detection(start_ts, end_ts)
 
     work_duration = 0.0
@@ -408,6 +448,18 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         ]
         remarks += "跨塔吊作业排班: " + "，".join(conflict_parts)
 
+    if operator_fatigue_list:
+        if remarks:
+            remarks += " | "
+        fatigue_parts = []
+        total_forced = sum(s.forced_shiftover_count for s in operator_fatigue_list)
+        max_continuous = max((s.max_continuous_work_minutes for s in operator_fatigue_list), default=0)
+        fatigue_parts.append(f"当日操作员{len(operator_fatigue_list)}人")
+        fatigue_parts.append(f"最长连续作业{max_continuous:.0f}分钟")
+        if total_forced > 0:
+            fatigue_parts.append(f"触发强制换班{total_forced}次")
+        remarks += "操作员疲劳情况: " + "，".join(fatigue_parts)
+
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
 
@@ -432,6 +484,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         energy_stats=energy_stats,
         emergency_stats=emergency_stats,
         conflict_detection_stats=conflict_detection_stats,
+        operator_fatigue_stats=operator_fatigue_list,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,
