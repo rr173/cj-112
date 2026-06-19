@@ -42,7 +42,7 @@ from inspection import init_inspection_module, check_overdue_hazards
 from load_moment_monitor import init_load_moment_monitor_module
 from wind_speed_monitor import init_wind_speed_monitor_module
 from energy_monitor import init_energy_monitor_module, check_and_reset_daily
-from emergency_response import init_emergency_response_module, check_and_trigger_emergency
+from emergency_response import init_emergency_response_module, check_and_trigger_emergency, check_auto_escalation
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -171,6 +171,14 @@ def _emergency_scheduler_loop():
                           f"等级: {event.emergency_level.value}, 规则: {event.rule_name}")
         except Exception as e:
             print(f"[应急响应定时检查] 执行异常: {e}")
+        try:
+            escalated = check_auto_escalation()
+            if escalated:
+                for event in escalated:
+                    print(f"[应急响应自动提级] 事件 {event.event_id} 自动提级到 "
+                          f"{event.emergency_level.value}")
+        except Exception as e:
+            print(f"[应急响应自动提级] 执行异常: {e}")
         time.sleep(10)
 
 

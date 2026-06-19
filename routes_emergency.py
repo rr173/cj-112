@@ -8,6 +8,7 @@ from models import (
     CompositeAlarmRuleCreate,
     CompositeAlarmRuleUpdate,
     EmergencyEventCloseRequest,
+    EmergencyEscalationRequest,
     DrillInitiateRequest,
 )
 from emergency_response import (
@@ -26,6 +27,8 @@ from emergency_response import (
     get_drill_report,
     get_rule_effectiveness,
     list_rules_effectiveness,
+    manual_escalate_event,
+    get_affected_work_orders,
 )
 
 router = APIRouter(prefix="/api/emergency", tags=["应急响应管理"])
@@ -222,4 +225,33 @@ def api_close_event(event_id: str, req: EmergencyEventCloseRequest):
         "code": 0,
         "message": "应急事件已关闭",
         "event": event,
+    }
+
+
+@router.post("/events/{event_id}/escalate", summary="手动提级应急事件(只能往上升,不能降级)")
+def api_escalate_event(event_id: str, req: EmergencyEscalationRequest):
+    try:
+        event = manual_escalate_event(
+            event_id=event_id,
+            escalated_by=req.escalated_by,
+            reason=req.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not event:
+        raise HTTPException(status_code=404, detail=f"应急事件 {event_id} 不存在")
+    return {
+        "code": 0,
+        "message": f"应急事件已提级到 {event.emergency_level.value}",
+        "event": event,
+    }
+
+
+@router.get("/affected-work-orders", summary="查询当前被紧急事件影响的工单列表")
+def api_get_affected_work_orders():
+    orders = get_affected_work_orders()
+    return {
+        "code": 0,
+        "total": len(orders),
+        "work_orders": orders,
     }

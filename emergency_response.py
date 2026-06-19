@@ -23,6 +23,7 @@ from models import (
     DrillActionReport,
     RuleEffectivenessRecord,
     RuleEffectivenessScore,
+    EscalationLog,
 )
 from collision import cranes_config, alarm_history, lock_crane as collision_lock_crane
 
@@ -34,6 +35,11 @@ drill_reports: Dict[str, DrillReport] = {}
 rule_effectiveness_records: Dict[str, List[RuleEffectivenessRecord]] = {}
 EFFECTIVENESS_HISTORY_WINDOW = 10
 MAINTENANCE_CHECK_WINDOW = 3
+ESCALATION_TIMEOUTS: Dict[EmergencyLevel, float] = {
+    EmergencyLevel.GENERAL: 1800.0,
+    EmergencyLevel.SERIOUS: 900.0,
+}
+ESCALATION_LEVEL_ORDER = [EmergencyLevel.GENERAL, EmergencyLevel.SERIOUS, EmergencyLevel.CRITICAL]
 
 
 def _datetime_str(ts: float) -> str:
@@ -463,6 +469,14 @@ def _build_emergency_plan(level: EmergencyLevel, crane_ids: List[str]) -> List[E
 
     if level == EmergencyLevel.CRITICAL:
         actions.append(EmergencyActionExecution(
+            action_type=EmergencyActionType.MARK_AFFECTED_WORK_ORDERS,
+            target_crane_ids=list(crane_ids),
+        ))
+        actions.append(EmergencyActionExecution(
+            action_type=EmergencyActionType.NOTIFY_SITE_COORDINATION,
+            target_crane_ids=list(crane_ids),
+        ))
+        actions.append(EmergencyActionExecution(
             action_type=EmergencyActionType.TRIGGER_BROADCAST,
             target_crane_ids=list(crane_ids),
         ))
@@ -586,6 +600,59 @@ def _execute_action(action: EmergencyActionExecution, event: EmergencyEvent) -> 
                     "broadcast_at": start_time,
                 }
 
+        elif action.action_type == EmergencyActionType.MARK_AFFECTED_WORK_ORDERS:
+            try:
+                from scheduler import work_orders, WorkOrderStatus
+                if event.is_drill:
+                    potential_count = sum(1 for o in work_orders.values()
+                                         if o.status == WorkOrderStatus.EXECUTING)
+                    action.status = EmergencyActionStatus.SUCCESS
+                    action.result_message = f"[演练] 模拟标记 {potential_count} 个执行中工单受影响 (未真实标记)"
+                    action.details = {
+                        "drill_mode": True,
+                        "simulated": True,
+                        "would_mark_count": potential_count,
+                    }
+                else:
+                    marked_count = 0
+                    marked_order_ids: List[str] = []
+                    for order in work_orders.values():
+                        if order.status == WorkOrderStatus.EXECUTING:
+                            if event.event_id not in order.affected_by_emergency_event_ids:
+                                order.affected_by_emergency_event_ids.append(event.event_id)
+                                marked_count += 1
+                                marked_order_ids.append(order.order_id)
+                    action.status = EmergencyActionStatus.SUCCESS
+                    action.result_message = f"已标记 {marked_count} 个执行中工单受紧急事件影响"
+                    action.details = {
+                        "marked_count": marked_count,
+                        "marked_order_ids": marked_order_ids,
+                    }
+            except ImportError:
+                action.status = EmergencyActionStatus.SKIPPED
+                action.result_message = "工单模块不可用，跳过受影响工单标记"
+
+        elif action.action_type == EmergencyActionType.NOTIFY_SITE_COORDINATION:
+            if event.is_drill:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"[演练] 模拟发送全场协调通知 (未真实发送)"
+                action.details = {
+                    "drill_mode": True,
+                    "simulated": True,
+                    "event_id": event.event_id,
+                    "emergency_level": event.emergency_level.value,
+                }
+            else:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"全场协调通知已发送: 紧急事件 {event.event_id}"
+                action.details = {
+                    "event_id": event.event_id,
+                    "emergency_level": event.emergency_level.value,
+                    "notification_type": "SITE_COORDINATION",
+                    "content": f"全场协调通知: 工地发生紧急事件({event.event_id}), 涉及塔吊: {', '.join(action.target_crane_ids)}, 请相关人员注意协调",
+                    "sent_at": start_time,
+                }
+
     except Exception as e:
         action.status = EmergencyActionStatus.FAILED
         action.result_message = f"执行失败: {str(e)}"
@@ -640,6 +707,7 @@ def check_and_trigger_emergency() -> List[EmergencyEvent]:
             rule_id=rule.rule_id,
             rule_name=rule.name,
             emergency_level=rule.emergency_level,
+            original_emergency_level=rule.emergency_level,
             status=EmergencyEventStatus.TRIGGERING,
             triggered_at=now,
             triggered_datetime_str=now_str,
@@ -823,6 +891,13 @@ def close_emergency_event(
                     restored_count += 1
             if restored_count > 0:
                 print(f"[应急响应] 事件 {event_id} 已关闭，自动恢复了 {restored_count} 个暂停的工单")
+            cleared_count = 0
+            for order in work_orders.values():
+                if event_id in order.affected_by_emergency_event_ids:
+                    order.affected_by_emergency_event_ids.remove(event_id)
+                    cleared_count += 1
+            if cleared_count > 0:
+                print(f"[应急响应] 事件 {event_id} 已关闭，自动清除了 {cleared_count} 个工单的受影响标记")
         except ImportError:
             pass
 
@@ -1011,6 +1086,7 @@ def initiate_drill(
         rule_id=rule.rule_id,
         rule_name=rule.name,
         emergency_level=rule.emergency_level,
+        original_emergency_level=rule.emergency_level,
         status=EmergencyEventStatus.TRIGGERING,
         triggered_at=now,
         triggered_datetime_str=now_str,
@@ -1108,3 +1184,143 @@ def list_rules_effectiveness() -> List[RuleEffectivenessScore]:
         if score:
             scores.append(score)
     return scores
+
+
+def _get_next_level(current_level: EmergencyLevel) -> Optional[EmergencyLevel]:
+    idx = ESCALATION_LEVEL_ORDER.index(current_level)
+    if idx < len(ESCALATION_LEVEL_ORDER) - 1:
+        return ESCALATION_LEVEL_ORDER[idx + 1]
+    return None
+
+
+def _build_supplemental_plan(
+    new_level: EmergencyLevel,
+    crane_ids: List[str],
+    executed_action_types: Set[EmergencyActionType],
+) -> List[EmergencyActionExecution]:
+    full_plan = _build_emergency_plan(new_level, crane_ids)
+    return [a for a in full_plan if a.action_type not in executed_action_types]
+
+
+def escalate_event(
+    event_id: str,
+    escalation_type: str,
+    reason: str,
+    escalated_by: Optional[str] = None,
+) -> Optional[EmergencyEvent]:
+    event = emergency_events.get(event_id)
+    if not event:
+        return None
+    if event.status != EmergencyEventStatus.HANDLING:
+        return None
+    if event.is_drill:
+        return None
+
+    next_level = _get_next_level(event.emergency_level)
+    if not next_level:
+        return None
+
+    executed_action_types: Set[EmergencyActionType] = {
+        a.action_type for a in event.actions
+        if a.status in [EmergencyActionStatus.SUCCESS, EmergencyActionStatus.SKIPPED]
+    }
+    supplemental_actions = _build_supplemental_plan(
+        next_level, event.affected_crane_ids, executed_action_types
+    )
+
+    for action in supplemental_actions:
+        _execute_action(action, event)
+
+    event.actions.extend(supplemental_actions)
+
+    now = time.time()
+    old_level = event.emergency_level
+    event.emergency_level = next_level
+    event.last_escalation_at = now
+
+    log = EscalationLog(
+        log_id=str(uuid.uuid4()),
+        event_id=event_id,
+        from_level=old_level,
+        to_level=next_level,
+        escalation_type=escalation_type,
+        reason=reason,
+        escalated_at=now,
+        escalated_datetime_str=_datetime_str(now),
+        escalated_by=escalated_by,
+        supplemental_actions=supplemental_actions,
+    )
+    event.escalation_logs.append(log)
+
+    print(f"[应急响应] 事件 {event_id} 从 {old_level.value} 升级到 {next_level.value}, "
+          f"方式: {escalation_type}, 原因: {reason}, "
+          f"补充动作: {[a.action_type.value for a in supplemental_actions]}")
+
+    return event
+
+
+def manual_escalate_event(
+    event_id: str,
+    escalated_by: str,
+    reason: str,
+) -> Optional[EmergencyEvent]:
+    if not escalated_by or not escalated_by.strip():
+        raise ValueError("提级操作人不能为空")
+    if not reason or not reason.strip():
+        raise ValueError("提级原因不能为空")
+
+    event = emergency_events.get(event_id)
+    if not event:
+        return None
+    if event.status != EmergencyEventStatus.HANDLING:
+        raise ValueError(f"只有处置中的事件可以提级，当前状态: {event.status.value}")
+    if event.is_drill:
+        raise ValueError("演练事件不支持提级")
+
+    next_level = _get_next_level(event.emergency_level)
+    if not next_level:
+        raise ValueError(f"事件已为最高等级 {event.emergency_level.value}，无法继续提级")
+
+    return escalate_event(
+        event_id=event_id,
+        escalation_type="MANUAL",
+        reason=reason.strip(),
+        escalated_by=escalated_by.strip(),
+    )
+
+
+def check_auto_escalation() -> List[EmergencyEvent]:
+    escalated_events: List[EmergencyEvent] = []
+    now = time.time()
+
+    for event in list(emergency_events.values()):
+        if event.status != EmergencyEventStatus.HANDLING:
+            continue
+        if event.is_drill:
+            continue
+        if event.emergency_level not in ESCALATION_TIMEOUTS:
+            continue
+
+        timeout = ESCALATION_TIMEOUTS[event.emergency_level]
+        reference_time = event.last_escalation_at or event.handling_started_at or event.triggered_at
+        if reference_time and (now - reference_time) >= timeout:
+            next_level = _get_next_level(event.emergency_level)
+            if next_level:
+                timeout_desc = f"{int(timeout)}秒"
+                result = escalate_event(
+                    event_id=event.event_id,
+                    escalation_type="AUTO",
+                    reason=f"处置超时自动提级: {event.emergency_level.value}级事件未在{timeout_desc}内关闭",
+                )
+                if result:
+                    escalated_events.append(result)
+
+    return escalated_events
+
+
+def get_affected_work_orders() -> list:
+    try:
+        from scheduler import work_orders
+        return [o for o in work_orders.values() if o.affected_by_emergency_event_ids]
+    except ImportError:
+        return []

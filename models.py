@@ -315,6 +315,7 @@ class WorkOrder(BaseModel):
     failure_reason: Optional[str] = None
     previous_status: Optional[WorkOrderStatus] = None
     suspended_by_emergency_event_id: Optional[str] = None
+    affected_by_emergency_event_ids: List[str] = Field(default=[], description="受影响的紧急事件ID列表")
 
 
 class WorkOrderManualAssign(BaseModel):
@@ -490,6 +491,8 @@ class EmergencyActionType(str, Enum):
     NOTIFY_OPERATOR = "NOTIFY_OPERATOR"
     SUSPEND_WORK_ORDERS = "SUSPEND_WORK_ORDERS"
     TRIGGER_BROADCAST = "TRIGGER_BROADCAST"
+    MARK_AFFECTED_WORK_ORDERS = "MARK_AFFECTED_WORK_ORDERS"
+    NOTIFY_SITE_COORDINATION = "NOTIFY_SITE_COORDINATION"
 
 
 class EmergencyActionStatus(str, Enum):
@@ -525,11 +528,30 @@ class GenericAlarmSnapshot(BaseModel):
     details: Dict = {}
 
 
+class EscalationLog(BaseModel):
+    log_id: str
+    event_id: str
+    from_level: EmergencyLevel
+    to_level: EmergencyLevel
+    escalation_type: str = Field(description="提级方式: AUTO 或 MANUAL")
+    reason: str = Field(description="提级原因")
+    escalated_at: float
+    escalated_datetime_str: str
+    escalated_by: Optional[str] = Field(default=None, description="手动提级操作人")
+    supplemental_actions: List[EmergencyActionExecution] = Field(default=[], description="补充执行的动作列表")
+
+
+class EmergencyEscalationRequest(BaseModel):
+    escalated_by: str = Field(..., min_length=1, description="提级操作人(安全员)")
+    reason: str = Field(..., min_length=1, description="提级原因")
+
+
 class EmergencyEvent(BaseModel):
     event_id: str
     rule_id: str
     rule_name: str
     emergency_level: EmergencyLevel
+    original_emergency_level: EmergencyLevel = Field(description="原始触发等级")
     status: EmergencyEventStatus = EmergencyEventStatus.TRIGGERING
     triggered_at: float
     triggered_datetime_str: str
@@ -544,6 +566,8 @@ class EmergencyEvent(BaseModel):
     is_drill: bool = Field(default=False, description="是否为演练事件")
     drill_initiated_by: Optional[str] = Field(default=None, description="演练发起人")
     plan_execution_delay_ms: Optional[float] = Field(default=None, description="从告警触发到预案开始执行的延迟(毫秒)")
+    escalation_logs: List[EscalationLog] = Field(default=[], description="升级历史记录")
+    last_escalation_at: Optional[float] = Field(default=None, description="最近一次提级时间")
 
 
 class EmergencyEventCloseRequest(BaseModel):
