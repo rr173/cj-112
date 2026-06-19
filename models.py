@@ -281,6 +281,7 @@ class WorkOrderStatus(str, Enum):
     EXECUTING = "EXECUTING"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
+    SUSPENDED = "SUSPENDED"
 
 
 class WorkOrderCreate(BaseModel):
@@ -312,6 +313,8 @@ class WorkOrder(BaseModel):
     cancelled_at: Optional[float] = None
     acquired_sectors: List[str] = []
     failure_reason: Optional[str] = None
+    previous_status: Optional[WorkOrderStatus] = None
+    suspended_by_emergency_event_id: Optional[str] = None
 
 
 class WorkOrderManualAssign(BaseModel):
@@ -538,9 +541,9 @@ class EmergencyEvent(BaseModel):
 
 
 class EmergencyEventCloseRequest(BaseModel):
-    closed_by: str = Field(description="关闭人(安全员)")
-    handling_result: str = Field(description="处置结果")
-    close_reason: str = Field(description="关闭原因")
+    closed_by: str = Field(..., min_length=1, description="关闭人(安全员)")
+    handling_result: str = Field(..., min_length=1, description="处置结果(必填,不能为空)")
+    close_reason: str = Field(..., min_length=1, description="关闭原因(必填,不能为空)")
 
 
 class EmergencyDailyStats(BaseModel):

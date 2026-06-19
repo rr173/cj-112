@@ -132,12 +132,15 @@ def api_list_events(
 
 @router.post("/events/{event_id}/close", summary="关闭应急事件(需填写处置结果和关闭原因)")
 def api_close_event(event_id: str, req: EmergencyEventCloseRequest):
-    event = close_emergency_event(
-        event_id=event_id,
-        closed_by=req.closed_by,
-        handling_result=req.handling_result,
-        close_reason=req.close_reason,
-    )
+    try:
+        event = close_emergency_event(
+            event_id=event_id,
+            closed_by=req.closed_by,
+            handling_result=req.handling_result,
+            close_reason=req.close_reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not event:
         raise HTTPException(status_code=404, detail=f"应急事件 {event_id} 不存在")
     return {

@@ -167,6 +167,11 @@ def init_emergency_response_module():
                     min_count=1,
                     time_window_seconds=60,
                 ),
+                CompositeAlarmRuleCondition(
+                    alarm_types=[AlarmType.ENERGY_QUOTA_EXCEEDED],
+                    min_count=1,
+                    time_window_seconds=60,
+                ),
             ],
             emergency_level=EmergencyLevel.SERIOUS,
             enabled=True,
@@ -335,6 +340,16 @@ def _check_condition_match(
         ]
 
     matched = len(relevant_alarms) >= condition.min_count
+
+    if matched and len(condition.alarm_types) > 1:
+        type_counts: Dict[AlarmType, int] = {}
+        for a in relevant_alarms:
+            type_counts[a.alarm_type] = type_counts.get(a.alarm_type, 0) + 1
+        for atype in condition.alarm_types:
+            if type_counts.get(atype, 0) < condition.min_count:
+                matched = False
+                break
+
     return matched, relevant_alarms
 
 
@@ -483,16 +498,22 @@ def _execute_action(action: EmergencyActionExecution, event: EmergencyEvent) -> 
             try:
                 from scheduler import work_orders, WorkOrderStatus
                 suspended_count = 0
+                suspended_order_ids: List[str] = []
                 for order in work_orders.values():
                     if order.assigned_crane_id in action.target_crane_ids and \
                        order.status in [WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED]:
-                        order.status = WorkOrderStatus.CANCELLED
-                        order.cancelled_at = now
-                        order.failure_reason = f"应急事件取消: {event.event_id}"
+                        order.previous_status = order.status
+                        order.status = WorkOrderStatus.SUSPENDED
+                        order.suspended_by_emergency_event_id = event.event_id
+                        order.failure_reason = f"应急事件暂停: {event.event_id}"
                         suspended_count += 1
+                        suspended_order_ids.append(order.order_id)
                 action.status = EmergencyActionStatus.SUCCESS
-                action.result_message = f"已暂停 {suspended_count} 个相关工单"
-                action.details = {"suspended_count": suspended_count}
+                action.result_message = f"已暂停 {suspended_count} 个相关工单(应急事件关闭后可恢复)"
+                action.details = {
+                    "suspended_count": suspended_count,
+                    "suspended_order_ids": suspended_order_ids,
+                }
             except ImportError:
                 action.status = EmergencyActionStatus.SKIPPED
                 action.result_message = "工单模块不可用，跳过工单暂停"
@@ -523,7 +544,7 @@ def check_and_trigger_emergency() -> List[EmergencyEvent]:
     triggered_events: List[EmergencyEvent] = []
     now = time.time()
 
-    active_events = {e for e in emergency_events.values() if e.status != EmergencyEventStatus.CLOSED}
+    active_events = [e for e in emergency_events.values() if e.status != EmergencyEventStatus.CLOSED]
     active_dedup_keys: Set[Tuple[str, str]] = set()
     for event in active_events:
         active_dedup_keys.add(_get_dedup_key(event.rule_id, event.affected_crane_ids))
@@ -620,12 +641,40 @@ def close_emergency_event(
     if event.status == EmergencyEventStatus.CLOSED:
         return event
 
+    if not closed_by or not closed_by.strip():
+        raise ValueError("关闭人不能为空")
+    if not handling_result or not handling_result.strip():
+        raise ValueError("处置结果不能为空")
+    if not close_reason or not close_reason.strip():
+        raise ValueError("关闭原因不能为空")
+
+    try:
+        from scheduler import work_orders, WorkOrderStatus
+        restored_count = 0
+        for order in work_orders.values():
+            if order.suspended_by_emergency_event_id == event_id and \
+               order.status == WorkOrderStatus.SUSPENDED:
+                if order.previous_status and order.previous_status in [
+                    WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED
+                ]:
+                    order.status = order.previous_status
+                else:
+                    order.status = WorkOrderStatus.PENDING
+                order.previous_status = None
+                order.suspended_by_emergency_event_id = None
+                order.failure_reason = None
+                restored_count += 1
+        if restored_count > 0:
+            print(f"[应急响应] 事件 {event_id} 已关闭，自动恢复了 {restored_count} 个暂停的工单")
+    except ImportError:
+        pass
+
     now = time.time()
     event.status = EmergencyEventStatus.CLOSED
     event.closed_at = now
-    event.closed_by = closed_by
-    event.handling_result = handling_result
-    event.close_reason = close_reason
+    event.closed_by = closed_by.strip()
+    event.handling_result = handling_result.strip()
+    event.close_reason = close_reason.strip()
 
     dedup_key = _get_dedup_key(event.rule_id, event.affected_crane_ids)
     if dedup_key in _active_rule_crane_dedup:
