@@ -234,6 +234,12 @@ def _assign_order_to_crane(order_id: str, crane_id: str):
     order.failure_reason = None
     _init_crane_queue(crane_id)
 
+    try:
+        from emergency_response import mark_order_affected_if_critical_active
+        mark_order_affected_if_critical_active(order_id, crane_id)
+    except ImportError:
+        pass
+
     priority_weight = PRIORITY_WEIGHT.get(order.priority, 2)
     queue = crane_queues[crane_id]
 
@@ -411,6 +417,12 @@ def start_order(order_id: str) -> Dict:
     order.updated_at = now
     order.acquired_sectors = acquired_sectors
 
+    try:
+        from emergency_response import mark_order_affected_if_critical_active
+        mark_order_affected_if_critical_active(order_id, crane_id)
+    except ImportError:
+        pass
+
     if order_id in crane_queues.get(crane_id, deque()):
         crane_queues[crane_id].remove(order_id)
 
@@ -488,6 +500,12 @@ def confirm_and_start_order(order_id: str, direction: PathDirection) -> Dict:
     order.started_at = now
     order.updated_at = now
     order.acquired_sectors = acquired_sectors
+
+    try:
+        from emergency_response import mark_order_affected_if_critical_active
+        mark_order_affected_if_critical_active(order_id, crane_id)
+    except ImportError:
+        pass
 
     if order_id in crane_queues.get(crane_id, deque()):
         crane_queues[crane_id].remove(order_id)

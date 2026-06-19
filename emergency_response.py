@@ -356,13 +356,15 @@ def _check_condition_match(
     matched = len(relevant_alarms) >= condition.min_count
 
     if matched and len(condition.alarm_types) > 1:
-        type_counts: Dict[AlarmType, int] = {}
-        for a in relevant_alarms:
-            type_counts[a.alarm_type] = type_counts.get(a.alarm_type, 0) + 1
-        for atype in condition.alarm_types:
-            if type_counts.get(atype, 0) < 1:
-                matched = False
-                break
+        require_all_types = (condition.min_count == len(condition.alarm_types))
+        if require_all_types:
+            type_counts: Dict[AlarmType, int] = {}
+            for a in relevant_alarms:
+                type_counts[a.alarm_type] = type_counts.get(a.alarm_type, 0) + 1
+            for atype in condition.alarm_types:
+                if type_counts.get(atype, 0) < 1:
+                    matched = False
+                    break
 
     return matched, relevant_alarms
 
@@ -603,11 +605,20 @@ def _execute_action(action: EmergencyActionExecution, event: EmergencyEvent) -> 
         elif action.action_type == EmergencyActionType.MARK_AFFECTED_WORK_ORDERS:
             try:
                 from scheduler import work_orders, WorkOrderStatus
+                affected_statuses = {
+                    WorkOrderStatus.PENDING,
+                    WorkOrderStatus.ASSIGNED,
+                    WorkOrderStatus.EXECUTING,
+                    WorkOrderStatus.SUSPENDED,
+                }
                 if event.is_drill:
-                    potential_count = sum(1 for o in work_orders.values()
-                                         if o.status == WorkOrderStatus.EXECUTING)
+                    potential_count = sum(
+                        1 for o in work_orders.values()
+                        if o.status in affected_statuses
+                        and o.assigned_crane_id in event.affected_crane_ids
+                    )
                     action.status = EmergencyActionStatus.SUCCESS
-                    action.result_message = f"[演练] 模拟标记 {potential_count} 个执行中工单受影响 (未真实标记)"
+                    action.result_message = f"[演练] 模拟标记 {potential_count} 个相关工单受影响 (未真实标记)"
                     action.details = {
                         "drill_mode": True,
                         "simulated": True,
@@ -617,16 +628,21 @@ def _execute_action(action: EmergencyActionExecution, event: EmergencyEvent) -> 
                     marked_count = 0
                     marked_order_ids: List[str] = []
                     for order in work_orders.values():
-                        if order.status == WorkOrderStatus.EXECUTING:
-                            if event.event_id not in order.affected_by_emergency_event_ids:
-                                order.affected_by_emergency_event_ids.append(event.event_id)
-                                marked_count += 1
-                                marked_order_ids.append(order.order_id)
+                        if order.status not in affected_statuses:
+                            continue
+                        if order.assigned_crane_id not in event.affected_crane_ids:
+                            continue
+                        if event.event_id not in order.affected_by_emergency_event_ids:
+                            order.affected_by_emergency_event_ids.append(event.event_id)
+                            marked_count += 1
+                            marked_order_ids.append(order.order_id)
                     action.status = EmergencyActionStatus.SUCCESS
-                    action.result_message = f"已标记 {marked_count} 个执行中工单受紧急事件影响"
+                    action.result_message = f"已标记 {marked_count} 个相关工单受紧急事件影响"
                     action.details = {
                         "marked_count": marked_count,
                         "marked_order_ids": marked_order_ids,
+                        "affected_crane_ids": list(event.affected_crane_ids),
+                        "affected_statuses": [s.value for s in affected_statuses],
                     }
             except ImportError:
                 action.status = EmergencyActionStatus.SKIPPED
@@ -1335,12 +1351,45 @@ def _sync_critical_affected_orders() -> None:
     if not active_critical_events:
         return
 
+    affected_statuses = {
+        WorkOrderStatus.PENDING,
+        WorkOrderStatus.ASSIGNED,
+        WorkOrderStatus.EXECUTING,
+        WorkOrderStatus.SUSPENDED,
+    }
+
     for order in work_orders.values():
-        if order.status != WorkOrderStatus.EXECUTING:
+        if order.status not in affected_statuses:
             continue
         for event in active_critical_events:
+            if order.assigned_crane_id not in event.affected_crane_ids:
+                continue
             if event.event_id not in order.affected_by_emergency_event_ids:
                 order.affected_by_emergency_event_ids.append(event.event_id)
+
+
+def mark_order_affected_if_critical_active(order_id: str, crane_id: str) -> None:
+    try:
+        from scheduler import work_orders
+    except ImportError:
+        return
+
+    order = work_orders.get(order_id)
+    if not order:
+        return
+
+    active_critical_events = [
+        e for e in emergency_events.values()
+        if e.status == EmergencyEventStatus.HANDLING
+        and not e.is_drill
+        and e.emergency_level == EmergencyLevel.CRITICAL
+    ]
+
+    for event in active_critical_events:
+        if crane_id not in event.affected_crane_ids:
+            continue
+        if event.event_id not in order.affected_by_emergency_event_ids:
+            order.affected_by_emergency_event_ids.append(event.event_id)
 
 
 def get_affected_work_orders() -> list:

@@ -143,6 +143,23 @@ def _generate_delay_suggestion(
     )
 
 
+def _will_conflict_with_order(target_order: WorkOrderForConflictCheck,
+                               target_crane_id: str,
+                               other_order: WorkOrderForConflictCheck,
+                               other_crane_id: str) -> bool:
+    target_sectors = _get_order_work_sector_ids(target_order, target_crane_id)
+    other_sectors = _get_order_work_sector_ids(other_order, other_crane_id)
+    if not (set(target_sectors) & set(other_sectors)):
+        return False
+
+    target_start = target_order.planned_start_time
+    target_end = target_start + target_order.estimated_duration * 60
+    other_start = other_order.planned_start_time
+    other_end = other_start + other_order.estimated_duration * 60
+
+    return _check_time_overlap(target_start, target_end, other_start, other_end)
+
+
 def _generate_change_crane_suggestion(
     conflict: ConflictPoint,
     orders_map: Dict[str, WorkOrderForConflictCheck],
@@ -156,22 +173,30 @@ def _generate_change_crane_suggestion(
     current_crane_a = conflict.crane_a_id
     current_crane_b = conflict.crane_b_id
 
+    excluded_cranes_for_a = {current_crane_a, current_crane_b}
+    excluded_cranes_for_b = {current_crane_a, current_crane_b}
+
     other_cranes_a = []
+    for cid in cranes_config:
+        if cid in excluded_cranes_for_a:
+            continue
+        if not can_crane_cover(cid, order_a.lift_x, order_a.lift_y,
+                               order_a.drop_x, order_a.drop_y, order_a.weight):
+            continue
+        if _will_conflict_with_order(order_a, cid, order_b, current_crane_b):
+            continue
+        other_cranes_a.append(cid)
+
     other_cranes_b = []
-
     for cid in cranes_config:
-        if cid == current_crane_a:
+        if cid in excluded_cranes_for_b:
             continue
-        if can_crane_cover(cid, order_a.lift_x, order_a.lift_y,
-                           order_a.drop_x, order_a.drop_y, order_a.weight):
-            other_cranes_a.append(cid)
-
-    for cid in cranes_config:
-        if cid == current_crane_b:
+        if not can_crane_cover(cid, order_b.lift_x, order_b.lift_y,
+                               order_b.drop_x, order_b.drop_y, order_b.weight):
             continue
-        if can_crane_cover(cid, order_b.lift_x, order_b.lift_y,
-                           order_b.drop_x, order_b.drop_y, order_b.weight):
-            other_cranes_b.append(cid)
+        if _will_conflict_with_order(order_b, cid, order_a, current_crane_a):
+            continue
+        other_cranes_b.append(cid)
 
     best_option = None
     min_delay = float("inf")
@@ -181,6 +206,13 @@ def _generate_change_crane_suggestion(
             o for o in all_orders
             if o.assigned_crane_id == cid and o.order_id != order_a.order_id
         ]
+        has_new_conflict = False
+        for eo in existing_orders_on_crane:
+            if _will_conflict_with_order(order_a, cid, eo, cid):
+                has_new_conflict = True
+                break
+        if has_new_conflict:
+            continue
         delay = _calculate_crane_switch_delay(order_a, existing_orders_on_crane, cid)
         if delay < min_delay:
             min_delay = delay
@@ -204,6 +236,13 @@ def _generate_change_crane_suggestion(
             o for o in all_orders
             if o.assigned_crane_id == cid and o.order_id != order_b.order_id
         ]
+        has_new_conflict = False
+        for eo in existing_orders_on_crane:
+            if _will_conflict_with_order(order_b, cid, eo, cid):
+                has_new_conflict = True
+                break
+        if has_new_conflict:
+            continue
         delay = _calculate_crane_switch_delay(order_b, existing_orders_on_crane, cid)
         if delay < min_delay:
             min_delay = delay
