@@ -584,6 +584,13 @@ class EmergencyDailyStats(BaseModel):
     critical_count: int = 0
 
 
+class ConflictDetectionDailyStats(BaseModel):
+    detection_count: int = 0
+    total_conflict_count: int = 0
+    accepted_suggestion_count: int = 0
+    detection_report_ids: List[str] = []
+
+
 class DailyReport(BaseModel):
     report_id: str
     crane_id: str
@@ -600,6 +607,7 @@ class DailyReport(BaseModel):
     inspection_stats: InspectionDailyStats = InspectionDailyStats()
     energy_stats: EnergyDailyStats = EnergyDailyStats()
     emergency_stats: EmergencyDailyStats = EmergencyDailyStats()
+    conflict_detection_stats: ConflictDetectionDailyStats = ConflictDetectionDailyStats()
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
@@ -1321,3 +1329,83 @@ class RuleEffectivenessScore(BaseModel):
     needs_maintenance: bool = False
     maintenance_reason: Optional[str] = None
     recent_history: List[RuleEffectivenessRecord] = []
+
+
+class WorkOrderForConflictCheck(BaseModel):
+    order_id: Optional[str] = Field(default=None, description="工单ID，如为空则自动生成")
+    lift_x: float = Field(description="起吊点X坐标(米)")
+    lift_y: float = Field(description="起吊点Y坐标(米)")
+    drop_x: float = Field(description="落点X坐标(米)")
+    drop_y: float = Field(description="落点Y坐标(米)")
+    weight: float = Field(description="预估重量(吨)")
+    estimated_duration: float = Field(description="预计耗时(分钟)")
+    planned_start_time: float = Field(description="预计开始时间(Unix时间戳)")
+    assigned_crane_id: Optional[str] = Field(default=None, description="已分配的塔吊ID，如为空则自动选择")
+    priority: WorkOrderPriority = Field(default=WorkOrderPriority.NORMAL, description="优先级")
+
+
+class ConflictSuggestionType(str, Enum):
+    DELAY_ORDER = "DELAY_ORDER"
+    CHANGE_CRANE = "CHANGE_CRANE"
+    SPLIT_ORDER = "SPLIT_ORDER"
+
+
+class ConflictSuggestion(BaseModel):
+    suggestion_id: str
+    suggestion_type: ConflictSuggestionType
+    description: str
+    total_delay_minutes: float
+    affected_order_ids: List[str]
+    details: Dict = {}
+    is_accepted: bool = False
+    accepted_at: Optional[float] = None
+    accepted_by: Optional[str] = None
+
+
+class ConflictPoint(BaseModel):
+    conflict_id: str
+    conflict_time_start: float
+    conflict_time_end: float
+    overlapping_sector_id: str
+    crane_a_id: str
+    crane_b_id: str
+    order_a_id: str
+    order_b_id: str
+    severity: str = "MEDIUM"
+    suggestions: List[ConflictSuggestion] = []
+
+
+class ConflictDetectionReportStatus(str, Enum):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    PARTIALLY_RESOLVED = "PARTIALLY_RESOLVED"
+    RESOLVED = "RESOLVED"
+
+
+class ConflictDetectionReport(BaseModel):
+    report_id: str
+    submitted_at: float
+    submitted_datetime_str: str
+    total_orders: int
+    total_cranes_involved: int
+    conflict_count: int
+    resolved_conflict_count: int = 0
+    accepted_suggestion_count: int = 0
+    status: ConflictDetectionReportStatus = ConflictDetectionReportStatus.COMPLETED
+    conflicts: List[ConflictPoint] = []
+    checked_orders: List[WorkOrderForConflictCheck] = []
+    adjusted_orders: List[Dict] = []
+    remarks: str = ""
+
+
+class ConflictDetectionRequest(BaseModel):
+    orders: List[WorkOrderForConflictCheck] = Field(description="待检测的工单列表")
+    submitter: Optional[str] = Field(default=None, description="提交人")
+
+
+class ConflictSuggestionAcceptRequest(BaseModel):
+    accepted_by: str = Field(description="接受人(安全员)")
+    remarks: Optional[str] = Field(default="", description="备注")
+
+
+

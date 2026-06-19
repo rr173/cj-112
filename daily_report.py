@@ -18,6 +18,7 @@ from models import (
     CraneStatusRecord,
     EmergencyDailyStats,
     EmergencyLevel,
+    ConflictDetectionDailyStats,
 )
 from collision import cranes_config, alarm_history
 from arbiter import arb_event_logs
@@ -31,6 +32,9 @@ freeze_lock_history: List[Dict] = []
 
 
 daily_reports: Dict[str, DailyReport] = {}
+
+
+conflict_detection_history: List[Dict] = []
 
 
 def init_daily_report_module():
@@ -67,6 +71,37 @@ def get_date_range(date_str: str) -> Tuple[float, float]:
 
 def get_today_date_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def add_conflict_detection_record(report_id: str, conflict_count: int,
+                                  accepted_count: int, timestamp: float):
+    conflict_detection_history.append({
+        "report_id": report_id,
+        "conflict_count": conflict_count,
+        "accepted_count": accepted_count,
+        "timestamp": timestamp,
+    })
+
+
+def update_conflict_detection_accepted(report_id: str, timestamp: float):
+    for record in conflict_detection_history:
+        if record["report_id"] == report_id:
+            record["accepted_count"] += 1
+            record["last_updated_at"] = timestamp
+            break
+
+
+def count_conflict_detection(start_ts: float, end_ts: float) -> ConflictDetectionDailyStats:
+    stats = ConflictDetectionDailyStats()
+    day_records = [
+        r for r in conflict_detection_history
+        if start_ts <= r["timestamp"] < end_ts
+    ]
+    stats.detection_count = len(day_records)
+    stats.total_conflict_count = sum(r["conflict_count"] for r in day_records)
+    stats.accepted_suggestion_count = sum(r["accepted_count"] for r in day_records)
+    stats.detection_report_ids = [r["report_id"] for r in day_records]
+    return stats
 
 
 def count_completed_orders(crane_id: str, start_ts: float, end_ts: float) -> int:
@@ -260,6 +295,8 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
     except ImportError:
         emergency_stats = EmergencyDailyStats()
 
+    conflict_detection_stats = count_conflict_detection(start_ts, end_ts)
+
     work_duration = 0.0
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
@@ -361,6 +398,16 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
                     f"(最高等级: {highest_level_str}, "
                     + "，".join(level_parts) + ")")
 
+    if conflict_detection_stats.detection_count > 0:
+        if remarks:
+            remarks += " | "
+        conflict_parts = [
+            f"冲突检测{conflict_detection_stats.detection_count}次",
+            f"发现冲突{conflict_detection_stats.total_conflict_count}个",
+            f"采纳建议{conflict_detection_stats.accepted_suggestion_count}条",
+        ]
+        remarks += "跨塔吊作业排班: " + "，".join(conflict_parts)
+
     report_key = f"{crane_id}_{date_str}"
     existing_report = daily_reports.get(report_key)
 
@@ -384,6 +431,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         inspection_stats=inspection_stats,
         energy_stats=energy_stats,
         emergency_stats=emergency_stats,
+        conflict_detection_stats=conflict_detection_stats,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,

@@ -33,6 +33,7 @@ from routes_load_moment import router as load_moment_router
 from routes_wind_speed import router as wind_speed_router
 from routes_energy import router as energy_router
 from routes_emergency import router as emergency_router
+from routes_conflict import router as conflict_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -43,6 +44,7 @@ from load_moment_monitor import init_load_moment_monitor_module
 from wind_speed_monitor import init_wind_speed_monitor_module
 from energy_monitor import init_energy_monitor_module, check_and_reset_daily
 from emergency_response import init_emergency_response_module, check_and_trigger_emergency, check_auto_escalation
+from conflict_scheduler import init_conflict_scheduler_module
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -60,6 +62,7 @@ app.include_router(load_moment_router)
 app.include_router(wind_speed_router)
 app.include_router(energy_router)
 app.include_router(emergency_router)
+app.include_router(conflict_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -245,6 +248,7 @@ def init_cranes():
     init_wind_speed_monitor_module()
     init_energy_monitor_module()
     init_emergency_response_module()
+    init_conflict_scheduler_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
