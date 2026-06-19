@@ -19,6 +19,10 @@ from models import (
     GenericAlarmSnapshot,
     EmergencyEvent,
     EmergencyDailyStats,
+    DrillReport,
+    DrillActionReport,
+    RuleEffectivenessRecord,
+    RuleEffectivenessScore,
 )
 from collision import cranes_config, alarm_history, lock_crane as collision_lock_crane
 
@@ -26,6 +30,10 @@ from collision import cranes_config, alarm_history, lock_crane as collision_lock
 composite_alarm_rules: Dict[str, CompositeAlarmRule] = {}
 emergency_events: Dict[str, EmergencyEvent] = {}
 _active_rule_crane_dedup: Dict[Tuple[str, str], str] = {}
+drill_reports: Dict[str, DrillReport] = {}
+rule_effectiveness_records: Dict[str, List[RuleEffectivenessRecord]] = {}
+EFFECTIVENESS_HISTORY_WINDOW = 10
+MAINTENANCE_CHECK_WINDOW = 3
 
 
 def _datetime_str(ts: float) -> str:
@@ -463,16 +471,25 @@ def _build_emergency_plan(level: EmergencyLevel, crane_ids: List[str]) -> List[E
 
 
 def _execute_action(action: EmergencyActionExecution, event: EmergencyEvent) -> None:
-    now = time.time()
+    start_time = time.time()
     try:
         if action.action_type == EmergencyActionType.LOCK_CRANE:
-            for crane_id in action.target_crane_ids:
-                try:
-                    collision_lock_crane(crane_id, f"应急事件锁定: {event.event_id}, 规则: {event.rule_name}")
-                except Exception:
-                    pass
-            action.status = EmergencyActionStatus.SUCCESS
-            action.result_message = f"已锁定 {len(action.target_crane_ids)} 台塔吊: {', '.join(action.target_crane_ids)}"
+            if event.is_drill:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"[演练] 模拟锁定 {len(action.target_crane_ids)} 台塔吊: {', '.join(action.target_crane_ids)} (未真实锁定)"
+                action.details = {
+                    "drill_mode": True,
+                    "simulated_cranes": action.target_crane_ids,
+                    "lock_reason": f"演练事件: {event.event_id}, 规则: {event.rule_name}",
+                }
+            else:
+                for crane_id in action.target_crane_ids:
+                    try:
+                        collision_lock_crane(crane_id, f"应急事件锁定: {event.event_id}, 规则: {event.rule_name}")
+                    except Exception:
+                        pass
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"已锁定 {len(action.target_crane_ids)} 台塔吊: {', '.join(action.target_crane_ids)}"
 
         elif action.action_type in [
             EmergencyActionType.NOTIFY_SAFETY_OFFICER,
@@ -485,58 +502,117 @@ def _execute_action(action: EmergencyActionExecution, event: EmergencyEvent) -> 
                 EmergencyActionType.NOTIFY_OPERATOR: "操作员",
             }
             role = role_map.get(action.action_type, "相关人员")
-            action.status = EmergencyActionStatus.SUCCESS
-            action.result_message = f"已通知{role}: 应急事件 {event.event_id}, 等级 {event.emergency_level.value}"
-            action.details = {
-                "event_id": event.event_id,
-                "emergency_level": event.emergency_level.value,
-                "affected_cranes": action.target_crane_ids,
-                "notified_at": now,
-            }
+            if event.is_drill:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"[演练] 模拟通知{role}: 应急事件 {event.event_id}, 等级 {event.emergency_level.value} (未真实发送)"
+                action.details = {
+                    "drill_mode": True,
+                    "event_id": event.event_id,
+                    "emergency_level": event.emergency_level.value,
+                    "affected_cranes": action.target_crane_ids,
+                    "notified_at": start_time,
+                    "simulated": True,
+                }
+            else:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"已通知{role}: 应急事件 {event.event_id}, 等级 {event.emergency_level.value}"
+                action.details = {
+                    "event_id": event.event_id,
+                    "emergency_level": event.emergency_level.value,
+                    "affected_cranes": action.target_crane_ids,
+                    "notified_at": start_time,
+                }
 
         elif action.action_type == EmergencyActionType.SUSPEND_WORK_ORDERS:
             try:
                 from scheduler import work_orders, WorkOrderStatus
-                suspended_count = 0
-                suspended_order_ids: List[str] = []
-                for order in work_orders.values():
-                    if order.assigned_crane_id in action.target_crane_ids and \
-                       order.status in [WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED]:
-                        order.previous_status = order.status
-                        order.status = WorkOrderStatus.SUSPENDED
-                        order.suspended_by_emergency_event_id = event.event_id
-                        order.failure_reason = f"应急事件暂停: {event.event_id}"
-                        suspended_count += 1
-                        suspended_order_ids.append(order.order_id)
-                action.status = EmergencyActionStatus.SUCCESS
-                action.result_message = f"已暂停 {suspended_count} 个相关工单(应急事件关闭后可恢复)"
-                action.details = {
-                    "suspended_count": suspended_count,
-                    "suspended_order_ids": suspended_order_ids,
-                }
+                if event.is_drill:
+                    potential_count = 0
+                    potential_order_ids: List[str] = []
+                    for order in work_orders.values():
+                        if order.assigned_crane_id in action.target_crane_ids and \
+                           order.status in [WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED]:
+                            potential_count += 1
+                            potential_order_ids.append(order.order_id)
+                    action.status = EmergencyActionStatus.SUCCESS
+                    action.result_message = f"[演练] 模拟暂停 {potential_count} 个相关工单 (未真实暂停)"
+                    action.details = {
+                        "drill_mode": True,
+                        "simulated": True,
+                        "would_suspend_count": potential_count,
+                        "would_suspend_order_ids": potential_order_ids,
+                    }
+                else:
+                    suspended_count = 0
+                    suspended_order_ids: List[str] = []
+                    for order in work_orders.values():
+                        if order.assigned_crane_id in action.target_crane_ids and \
+                           order.status in [WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED]:
+                            order.previous_status = order.status
+                            order.status = WorkOrderStatus.SUSPENDED
+                            order.suspended_by_emergency_event_id = event.event_id
+                            order.failure_reason = f"应急事件暂停: {event.event_id}"
+                            suspended_count += 1
+                            suspended_order_ids.append(order.order_id)
+                    action.status = EmergencyActionStatus.SUCCESS
+                    action.result_message = f"已暂停 {suspended_count} 个相关工单(应急事件关闭后可恢复)"
+                    action.details = {
+                        "suspended_count": suspended_count,
+                        "suspended_order_ids": suspended_order_ids,
+                    }
             except ImportError:
                 action.status = EmergencyActionStatus.SKIPPED
                 action.result_message = "工单模块不可用，跳过工单暂停"
 
         elif action.action_type == EmergencyActionType.TRIGGER_BROADCAST:
-            action.status = EmergencyActionStatus.SUCCESS
-            action.result_message = f"全场广播已触发: 应急事件 {event.event_id}, 等级 {event.emergency_level.value}"
-            action.details = {
-                "event_id": event.event_id,
-                "emergency_level": event.emergency_level.value,
-                "broadcast_content": f"紧急广播：触发{event.emergency_level.value}级应急事件，请相关人员立即处置！涉及塔吊: {', '.join(action.target_crane_ids)}",
-                "broadcast_at": now,
-            }
+            if event.is_drill:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"[演练] 模拟触发全场广播: 应急事件 {event.event_id}, 等级 {event.emergency_level.value} (未真实广播)"
+                action.details = {
+                    "drill_mode": True,
+                    "simulated": True,
+                    "event_id": event.event_id,
+                    "emergency_level": event.emergency_level.value,
+                    "broadcast_content": f"[演练] 紧急广播：触发{event.emergency_level.value}级应急事件，请相关人员注意！涉及塔吊: {', '.join(action.target_crane_ids)}",
+                    "broadcast_at": start_time,
+                }
+            else:
+                action.status = EmergencyActionStatus.SUCCESS
+                action.result_message = f"全场广播已触发: 应急事件 {event.event_id}, 等级 {event.emergency_level.value}"
+                action.details = {
+                    "event_id": event.event_id,
+                    "emergency_level": event.emergency_level.value,
+                    "broadcast_content": f"紧急广播：触发{event.emergency_level.value}级应急事件，请相关人员立即处置！涉及塔吊: {', '.join(action.target_crane_ids)}",
+                    "broadcast_at": start_time,
+                }
 
     except Exception as e:
         action.status = EmergencyActionStatus.FAILED
         action.result_message = f"执行失败: {str(e)}"
 
-    action.executed_at = now
+    now = time.time()
+    action.executed_at = start_time
+    action.execution_duration_ms = round((now - start_time) * 1000, 2)
 
 
 def _get_dedup_key(rule_id: str, crane_ids: List[str]) -> Tuple[str, str]:
     return (rule_id, "|".join(sorted(set(crane_ids))))
+
+
+def _get_real_active_dedup_keys() -> Set[Tuple[str, str]]:
+    active_events = [e for e in emergency_events.values() 
+                     if e.status != EmergencyEventStatus.CLOSED and not e.is_drill]
+    active_dedup_keys: Set[Tuple[str, str]] = set()
+    for event in active_events:
+        active_dedup_keys.add(_get_dedup_key(event.rule_id, event.affected_crane_ids))
+    return active_dedup_keys
+
+
+def _compute_plan_execution_delay(event: EmergencyEvent) -> None:
+    if event.related_alarms and event.handling_started_at:
+        earliest_alarm_ts = min(a.timestamp for a in event.related_alarms)
+        delay_ms = (event.handling_started_at - earliest_alarm_ts) * 1000
+        event.plan_execution_delay_ms = round(delay_ms, 2)
 
 
 def check_and_trigger_emergency() -> List[EmergencyEvent]:
@@ -544,10 +620,7 @@ def check_and_trigger_emergency() -> List[EmergencyEvent]:
     triggered_events: List[EmergencyEvent] = []
     now = time.time()
 
-    active_events = [e for e in emergency_events.values() if e.status != EmergencyEventStatus.CLOSED]
-    active_dedup_keys: Set[Tuple[str, str]] = set()
-    for event in active_events:
-        active_dedup_keys.add(_get_dedup_key(event.rule_id, event.affected_crane_ids))
+    active_dedup_keys = _get_real_active_dedup_keys()
 
     rules = list_rules(enabled_only=True)
     for rule in rules:
@@ -573,6 +646,7 @@ def check_and_trigger_emergency() -> List[EmergencyEvent]:
             affected_crane_ids=list(affected_cranes),
             related_alarms=matched_alarms,
             actions=actions,
+            is_drill=False,
         )
 
         for action in event.actions:
@@ -580,6 +654,7 @@ def check_and_trigger_emergency() -> List[EmergencyEvent]:
 
         event.status = EmergencyEventStatus.HANDLING
         event.handling_started_at = time.time()
+        _compute_plan_execution_delay(event)
 
         emergency_events[event.event_id] = event
         active_dedup_keys.add(dedup_key)
@@ -593,13 +668,17 @@ def check_and_trigger_emergency() -> List[EmergencyEvent]:
 
 def is_crane_blocked_by_emergency(crane_id: str) -> bool:
     for event in emergency_events.values():
-        if event.status != EmergencyEventStatus.CLOSED and crane_id in event.affected_crane_ids:
+        if (event.status != EmergencyEventStatus.CLOSED 
+                and not event.is_drill 
+                and crane_id in event.affected_crane_ids):
             return True
     return False
 
 
-def get_active_emergency_events() -> List[EmergencyEvent]:
+def get_active_emergency_events(include_drill: bool = False) -> List[EmergencyEvent]:
     events = [e for e in emergency_events.values() if e.status != EmergencyEventStatus.CLOSED]
+    if not include_drill:
+        events = [e for e in events if not e.is_drill]
     events.sort(key=lambda e: e.triggered_at, reverse=True)
     return events
 
@@ -613,9 +692,12 @@ def list_emergency_events(
     start_time: Optional[float] = None,
     end_time: Optional[float] = None,
     status: Optional[EmergencyEventStatus] = None,
+    include_drill: bool = False,
 ) -> List[EmergencyEvent]:
     events = list(emergency_events.values())
 
+    if not include_drill:
+        events = [e for e in events if not e.is_drill]
     if level is not None:
         events = [e for e in events if e.emergency_level == level]
     if status is not None:
@@ -627,6 +709,80 @@ def list_emergency_events(
 
     events.sort(key=lambda e: e.triggered_at, reverse=True)
     return events
+
+
+def _record_effectiveness(event: EmergencyEvent) -> None:
+    if event.rule_id not in rule_effectiveness_records:
+        rule_effectiveness_records[event.rule_id] = []
+
+    action_results = []
+    success_count = 0
+    total_count = len(event.actions)
+    has_failure = False
+
+    for action in event.actions:
+        action_result = {
+            "action_type": action.action_type.value,
+            "status": action.status.value,
+            "execution_duration_ms": action.execution_duration_ms,
+            "result_message": action.result_message,
+        }
+        action_results.append(action_result)
+        if action.status == EmergencyActionStatus.SUCCESS:
+            success_count += 1
+        elif action.status == EmergencyActionStatus.FAILED:
+            has_failure = True
+
+    success_rate = success_count / total_count if total_count > 0 else 0.0
+
+    record = RuleEffectivenessRecord(
+        record_id=str(uuid.uuid4()),
+        rule_id=event.rule_id,
+        event_id=event.event_id,
+        is_drill=event.is_drill,
+        triggered_at=event.triggered_at,
+        plan_execution_delay_ms=event.plan_execution_delay_ms,
+        action_results=action_results,
+        action_success_count=success_count,
+        action_total_count=total_count,
+        action_success_rate=round(success_rate, 4),
+        has_action_failure=has_failure,
+    )
+
+    records = rule_effectiveness_records[event.rule_id]
+    records.append(record)
+    records.sort(key=lambda r: r.triggered_at, reverse=True)
+
+    rule_effectiveness_records[event.rule_id] = records[:EFFECTIVENESS_HISTORY_WINDOW]
+
+    _update_rule_maintenance_status(event.rule_id)
+
+
+def _update_rule_maintenance_status(rule_id: str) -> None:
+    rule = composite_alarm_rules.get(rule_id)
+    if not rule:
+        return
+
+    records = rule_effectiveness_records.get(rule_id, [])
+    real_records = [r for r in records if not r.is_drill]
+
+    if not real_records:
+        rule.needs_maintenance = False
+        rule.maintenance_reason = None
+        return
+
+    recent_records = real_records[:MAINTENANCE_CHECK_WINDOW]
+    has_recent_failure = any(r.has_action_failure for r in recent_records)
+
+    if has_recent_failure:
+        rule.needs_maintenance = True
+        failure_events = [r.event_id for r in recent_records if r.has_action_failure]
+        rule.maintenance_reason = f"最近{len(recent_records)}次真实触发中有{len(failure_events)}次出现动作失败，涉及事件: {', '.join(failure_events)}"
+    else:
+        rule.needs_maintenance = False
+        rule.maintenance_reason = None
+
+    rule.updated_at = time.time()
 
 
 def close_emergency_event(
@@ -648,26 +804,27 @@ def close_emergency_event(
     if not close_reason or not close_reason.strip():
         raise ValueError("关闭原因不能为空")
 
-    try:
-        from scheduler import work_orders, WorkOrderStatus
-        restored_count = 0
-        for order in work_orders.values():
-            if order.suspended_by_emergency_event_id == event_id and \
-               order.status == WorkOrderStatus.SUSPENDED:
-                if order.previous_status and order.previous_status in [
-                    WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED
-                ]:
-                    order.status = order.previous_status
-                else:
-                    order.status = WorkOrderStatus.PENDING
-                order.previous_status = None
-                order.suspended_by_emergency_event_id = None
-                order.failure_reason = None
-                restored_count += 1
-        if restored_count > 0:
-            print(f"[应急响应] 事件 {event_id} 已关闭，自动恢复了 {restored_count} 个暂停的工单")
-    except ImportError:
-        pass
+    if not event.is_drill:
+        try:
+            from scheduler import work_orders, WorkOrderStatus
+            restored_count = 0
+            for order in work_orders.values():
+                if order.suspended_by_emergency_event_id == event_id and \
+                   order.status == WorkOrderStatus.SUSPENDED:
+                    if order.previous_status and order.previous_status in [
+                        WorkOrderStatus.PENDING, WorkOrderStatus.ASSIGNED
+                    ]:
+                        order.status = order.previous_status
+                    else:
+                        order.status = WorkOrderStatus.PENDING
+                    order.previous_status = None
+                    order.suspended_by_emergency_event_id = None
+                    order.failure_reason = None
+                    restored_count += 1
+            if restored_count > 0:
+                print(f"[应急响应] 事件 {event_id} 已关闭，自动恢复了 {restored_count} 个暂停的工单")
+        except ImportError:
+            pass
 
     now = time.time()
     event.status = EmergencyEventStatus.CLOSED
@@ -680,6 +837,8 @@ def close_emergency_event(
     if dedup_key in _active_rule_crane_dedup:
         del _active_rule_crane_dedup[dedup_key]
 
+    _record_effectiveness(event)
+
     return event
 
 
@@ -688,6 +847,8 @@ def get_emergency_daily_stats(crane_id: str, start_ts: float, end_ts: float) -> 
     level_order = {EmergencyLevel.GENERAL: 1, EmergencyLevel.SERIOUS: 2, EmergencyLevel.CRITICAL: 3}
 
     for event in emergency_events.values():
+        if event.is_drill:
+            continue
         if crane_id not in event.affected_crane_ids:
             continue
         if not (start_ts <= event.triggered_at < end_ts):
@@ -707,3 +868,243 @@ def get_emergency_daily_stats(crane_id: str, start_ts: float, end_ts: float) -> 
             stats.highest_emergency_level = event.emergency_level
 
     return stats
+
+
+def _generate_simulated_alarms(
+    rule: CompositeAlarmRule,
+    target_crane_ids: Optional[List[str]] = None,
+) -> Tuple[List[str], List[GenericAlarmSnapshot]]:
+    now = time.time()
+    now_str = _datetime_str(now)
+    simulated_alarms: List[GenericAlarmSnapshot] = []
+    affected_cranes: List[str] = []
+    all_crane_ids = list(cranes_config.keys())
+
+    if target_crane_ids:
+        for cid in target_crane_ids:
+            if cid not in all_crane_ids:
+                raise ValueError(f"塔吊 {cid} 不存在")
+        selected_cranes = target_crane_ids
+    else:
+        if rule.scope == RuleScope.SINGLE_CRANE:
+            selected_cranes = [all_crane_ids[0]] if all_crane_ids else []
+        elif rule.scope == RuleScope.ADJACENT_CRANES:
+            adjacent_pair = None
+            for i in range(len(all_crane_ids)):
+                for j in range(i + 1, len(all_crane_ids)):
+                    if are_cranes_adjacent(all_crane_ids[i], all_crane_ids[j]):
+                        adjacent_pair = [all_crane_ids[i], all_crane_ids[j]]
+                        break
+                if adjacent_pair:
+                    break
+            selected_cranes = adjacent_pair or (all_crane_ids[:2] if len(all_crane_ids) >= 2 else all_crane_ids)
+        else:
+            selected_cranes = all_crane_ids[:3] if len(all_crane_ids) >= 3 else all_crane_ids
+
+    if not selected_cranes:
+        raise ValueError("没有可用的塔吊进行演练")
+
+    affected_cranes = selected_cranes
+
+    for condition in rule.conditions:
+        alarm_count = max(condition.min_count, 1)
+        for i in range(alarm_count):
+            for alarm_type in condition.alarm_types:
+                crane_idx = i % len(selected_cranes)
+                crane_id = selected_cranes[crane_idx]
+                ts = now - (condition.time_window_seconds * 0.5) + (i * 0.1)
+                alarm = GenericAlarmSnapshot(
+                    alarm_id=f"sim-{uuid.uuid4().hex[:8]}",
+                    alarm_type=alarm_type,
+                    timestamp=ts,
+                    datetime_str=_datetime_str(ts),
+                    crane_ids=[crane_id],
+                    message=f"[演练] 模拟{alarm_type.value}告警",
+                    details={
+                        "simulated": True,
+                        "drill_mode": True,
+                        "condition_index": rule.conditions.index(condition),
+                    },
+                )
+                simulated_alarms.append(alarm)
+
+    simulated_alarms.sort(key=lambda x: x.timestamp)
+    return affected_cranes, simulated_alarms
+
+
+def _build_drill_report(
+    event: EmergencyEvent,
+    drill_id: str,
+    initiated_by: str,
+) -> DrillReport:
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    action_reports: List[DrillActionReport] = []
+
+    for action in event.actions:
+        report = DrillActionReport(
+            action_type=action.action_type,
+            target_crane_ids=list(action.target_crane_ids),
+            status=action.status,
+            executed_at=action.executed_at,
+            execution_duration_ms=action.execution_duration_ms,
+            result_message=action.result_message,
+            details=dict(action.details),
+        )
+        action_reports.append(report)
+        if action.status == EmergencyActionStatus.SUCCESS:
+            success_count += 1
+        elif action.status == EmergencyActionStatus.FAILED:
+            failed_count += 1
+        elif action.status == EmergencyActionStatus.SKIPPED:
+            skipped_count += 1
+
+    total_actions = len(event.actions)
+    all_successful = total_actions > 0 and failed_count == 0 and skipped_count == 0
+
+    drill_start = event.triggered_at
+    drill_end = event.closed_at or time.time()
+    total_duration_ms = round((drill_end - drill_start) * 1000, 2)
+
+    return DrillReport(
+        drill_id=drill_id,
+        rule_id=event.rule_id,
+        rule_name=event.rule_name,
+        initiated_by=initiated_by,
+        initiated_at=drill_start,
+        initiated_datetime_str=event.triggered_datetime_str,
+        completed_at=drill_end,
+        total_duration_ms=total_duration_ms,
+        plan_execution_delay_ms=event.plan_execution_delay_ms,
+        affected_crane_ids=list(event.affected_crane_ids),
+        simulated_alarms=list(event.related_alarms),
+        action_reports=action_reports,
+        success_count=success_count,
+        failed_count=failed_count,
+        skipped_count=skipped_count,
+        all_actions_successful=all_successful,
+    )
+
+
+def initiate_drill(
+    rule_id: str,
+    initiated_by: str,
+    target_crane_ids: Optional[List[str]] = None,
+) -> DrillReport:
+    rule = composite_alarm_rules.get(rule_id)
+    if not rule:
+        raise ValueError(f"规则 {rule_id} 不存在")
+    if not rule.enabled:
+        raise ValueError(f"规则 {rule_id} 未启用")
+
+    affected_cranes, simulated_alarms = _generate_simulated_alarms(rule, target_crane_ids)
+
+    now = time.time()
+    now_str = _datetime_str(now)
+    actions = _build_emergency_plan(rule.emergency_level, affected_cranes)
+
+    drill_id = f"drill-{uuid.uuid4().hex[:12]}"
+
+    event = EmergencyEvent(
+        event_id=drill_id,
+        rule_id=rule.rule_id,
+        rule_name=rule.name,
+        emergency_level=rule.emergency_level,
+        status=EmergencyEventStatus.TRIGGERING,
+        triggered_at=now,
+        triggered_datetime_str=now_str,
+        affected_crane_ids=list(affected_cranes),
+        related_alarms=simulated_alarms,
+        actions=actions,
+        is_drill=True,
+        drill_initiated_by=initiated_by,
+    )
+
+    for action in event.actions:
+        _execute_action(action, event)
+
+    event.status = EmergencyEventStatus.HANDLING
+    event.handling_started_at = time.time()
+    _compute_plan_execution_delay(event)
+
+    emergency_events[event.event_id] = event
+
+    event.status = EmergencyEventStatus.CLOSED
+    event.closed_at = time.time()
+    event.closed_by = initiated_by
+    event.handling_result = "演练完成"
+    event.close_reason = "演练模式自动关闭"
+
+    drill_report = _build_drill_report(event, drill_id, initiated_by)
+    drill_reports[drill_id] = drill_report
+
+    _record_effectiveness(event)
+
+    print(f"[应急演练] 完成演练: {drill_id}, 规则: {rule.name}, "
+          f"发起人: {initiated_by}, 涉及塔吊: {affected_cranes}, "
+          f"动作成功: {drill_report.success_count}/{len(actions)}")
+
+    return drill_report
+
+
+def list_drill_reports(
+    rule_id: Optional[str] = None,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+) -> List[DrillReport]:
+    reports = list(drill_reports.values())
+
+    if rule_id is not None:
+        reports = [r for r in reports if r.rule_id == rule_id]
+    if start_time is not None:
+        reports = [r for r in reports if r.initiated_at >= start_time]
+    if end_time is not None:
+        reports = [r for r in reports if r.initiated_at < end_time]
+
+    reports.sort(key=lambda r: r.initiated_at, reverse=True)
+    return reports
+
+
+def get_drill_report(drill_id: str) -> Optional[DrillReport]:
+    return drill_reports.get(drill_id)
+
+
+def get_rule_effectiveness(rule_id: str) -> Optional[RuleEffectivenessScore]:
+    rule = composite_alarm_rules.get(rule_id)
+    if not rule:
+        return None
+
+    records = rule_effectiveness_records.get(rule_id, [])
+    real_records = [r for r in records if not r.is_drill]
+
+    avg_delay = None
+    avg_success_rate = 0.0
+
+    if real_records:
+        delays = [r.plan_execution_delay_ms for r in real_records if r.plan_execution_delay_ms is not None]
+        if delays:
+            avg_delay = round(sum(delays) / len(delays), 2)
+
+        success_rates = [r.action_success_rate for r in real_records]
+        avg_success_rate = round(sum(success_rates) / len(success_rates), 4)
+
+    return RuleEffectivenessScore(
+        rule_id=rule.rule_id,
+        rule_name=rule.name,
+        total_real_triggers=len(real_records),
+        avg_plan_execution_delay_ms=avg_delay,
+        avg_action_success_rate=avg_success_rate,
+        needs_maintenance=rule.needs_maintenance,
+        maintenance_reason=rule.maintenance_reason,
+        recent_history=list(records),
+    )
+
+
+def list_rules_effectiveness() -> List[RuleEffectivenessScore]:
+    scores = []
+    for rule_id in composite_alarm_rules.keys():
+        score = get_rule_effectiveness(rule_id)
+        if score:
+            scores.append(score)
+    return scores

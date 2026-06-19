@@ -479,6 +479,8 @@ class CompositeAlarmRule(BaseModel):
     enabled: bool = True
     created_at: float
     updated_at: float
+    needs_maintenance: bool = Field(default=False, description="是否需要检修")
+    maintenance_reason: Optional[str] = Field(default=None, description="检修原因")
 
 
 class EmergencyActionType(str, Enum):
@@ -502,6 +504,7 @@ class EmergencyActionExecution(BaseModel):
     target_crane_ids: List[str] = Field(default=[], description="动作目标塔吊ID列表(如锁定塔吊)")
     status: EmergencyActionStatus = EmergencyActionStatus.PENDING
     executed_at: Optional[float] = None
+    execution_duration_ms: Optional[float] = Field(default=None, description="动作执行耗时(毫秒)")
     result_message: str = ""
     details: Dict = {}
 
@@ -538,6 +541,9 @@ class EmergencyEvent(BaseModel):
     closed_by: Optional[str] = None
     close_reason: Optional[str] = None
     handling_result: Optional[str] = None
+    is_drill: bool = Field(default=False, description="是否为演练事件")
+    drill_initiated_by: Optional[str] = Field(default=None, description="演练发起人")
+    plan_execution_delay_ms: Optional[float] = Field(default=None, description="从告警触发到预案开始执行的延迟(毫秒)")
 
 
 class EmergencyEventCloseRequest(BaseModel):
@@ -1231,3 +1237,63 @@ class EnergyLimitRemoveRequest(BaseModel):
     crane_id: str = Field(description="要从限电名单移除的塔吊ID")
     operator: Optional[str] = Field(default=None, description="操作人(管理员)")
     reason: Optional[str] = Field(default=None, description="移除原因")
+
+
+class DrillInitiateRequest(BaseModel):
+    rule_id: str = Field(description="要演练的规则ID")
+    initiated_by: str = Field(description="演练发起人(安全员)")
+    target_crane_ids: Optional[List[str]] = Field(default=None, description="指定演练涉及的塔吊ID列表，不指定则根据规则自动选择")
+
+
+class DrillActionReport(BaseModel):
+    action_type: EmergencyActionType
+    target_crane_ids: List[str]
+    status: EmergencyActionStatus
+    executed_at: Optional[float] = None
+    execution_duration_ms: Optional[float] = None
+    result_message: str = ""
+    details: Dict = {}
+
+
+class DrillReport(BaseModel):
+    drill_id: str
+    rule_id: str
+    rule_name: str
+    initiated_by: str
+    initiated_at: float
+    initiated_datetime_str: str
+    completed_at: Optional[float] = None
+    total_duration_ms: Optional[float] = None
+    plan_execution_delay_ms: Optional[float] = None
+    affected_crane_ids: List[str]
+    simulated_alarms: List[GenericAlarmSnapshot]
+    action_reports: List[DrillActionReport] = []
+    success_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    all_actions_successful: bool = False
+
+
+class RuleEffectivenessRecord(BaseModel):
+    record_id: str
+    rule_id: str
+    event_id: str
+    is_drill: bool = False
+    triggered_at: float
+    plan_execution_delay_ms: Optional[float] = None
+    action_results: List[Dict] = []
+    action_success_count: int = 0
+    action_total_count: int = 0
+    action_success_rate: float = 0.0
+    has_action_failure: bool = False
+
+
+class RuleEffectivenessScore(BaseModel):
+    rule_id: str
+    rule_name: str
+    total_real_triggers: int = 0
+    avg_plan_execution_delay_ms: Optional[float] = None
+    avg_action_success_rate: float = 0.0
+    needs_maintenance: bool = False
+    maintenance_reason: Optional[str] = None
+    recent_history: List[RuleEffectivenessRecord] = []
