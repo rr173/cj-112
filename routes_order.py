@@ -165,3 +165,47 @@ def api_list_orders(status: Optional[WorkOrderStatus] = None):
         "total": len(orders),
         "orders": orders,
     }
+
+
+@router.get("/{order_id}/progress", summary="查询工单实时进度")
+def api_get_order_progress(order_id: str):
+    from order_progress import get_order_progress
+    progress = get_order_progress(order_id)
+    if not progress:
+        raise HTTPException(status_code=404, detail=f"工单 {order_id} 暂无进度数据")
+    return progress
+
+
+@router.get("/crane/{crane_id}/current-progress", summary="查询塔吊当前执行工单的进度")
+def api_get_crane_current_progress(crane_id: str):
+    if crane_id not in cranes_config:
+        raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 不存在")
+    from order_progress import get_crane_current_progress
+    progress = get_crane_current_progress(crane_id)
+    if not progress:
+        return {
+            "crane_id": crane_id,
+            "has_executing_order": False,
+            "message": "塔吊当前无正在执行的工单",
+        }
+    return {
+        "crane_id": crane_id,
+        "has_executing_order": True,
+        "progress": progress,
+    }
+
+
+@router.get("/crane/{crane_id}/deviation-stats", summary="查询塔吊最近10单的平均耗时偏差比")
+def api_get_crane_deviation_stats(crane_id: str):
+    if crane_id not in cranes_config:
+        raise HTTPException(status_code=404, detail=f"塔吊 {crane_id} 不存在")
+    from order_progress import get_crane_deviation_ratio_stats
+    return get_crane_deviation_ratio_stats(crane_id)
+
+
+@router.get("/stagnation-alarms", summary="查询工单停滞告警历史")
+def api_get_stagnation_alarms(crane_id: Optional[str] = None,
+                              order_id: Optional[str] = None,
+                              limit: int = 100):
+    from order_progress import get_stagnation_alarms
+    return get_stagnation_alarms(crane_id=crane_id, order_id=order_id, limit=limit)

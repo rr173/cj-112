@@ -84,6 +84,7 @@ class AlarmType(str, Enum):
     WORK_PERMIT_EXTENSION_REQUESTED = "WORK_PERMIT_EXTENSION_REQUESTED"
     WORK_PERMIT_EXTENSION_APPROVED = "WORK_PERMIT_EXTENSION_APPROVED"
     WORK_PERMIT_EXTENSION_REJECTED = "WORK_PERMIT_EXTENSION_REJECTED"
+    WORK_ORDER_STAGNATION = "WORK_ORDER_STAGNATION"
 
 
 class WindAlarmLevel(str, Enum):
@@ -326,6 +327,10 @@ class WorkOrder(BaseModel):
     previous_status: Optional[WorkOrderStatus] = None
     suspended_by_emergency_event_id: Optional[str] = None
     affected_by_emergency_event_ids: List[str] = Field(default=[], description="受影响的紧急事件ID列表")
+    progress_percent: float = Field(default=0.0, description="当前执行进度百分比(0-100)")
+    last_progress_updated_at: Optional[float] = Field(default=None, description="最近一次进度更新时间(Unix秒)")
+    actual_duration_seconds: Optional[float] = Field(default=None, description="实际执行耗时(秒)")
+    duration_deviation_ratio: Optional[float] = Field(default=None, description="耗时偏差比(实际耗时/预估耗时)")
 
 
 class WorkOrderManualAssign(BaseModel):
@@ -705,6 +710,8 @@ class DailyReport(BaseModel):
     conflict_detection_stats: ConflictDetectionDailyStats = ConflictDetectionDailyStats()
     operator_fatigue_stats: List["OperatorFatigueDailySummary"] = []
     work_permit_stats: WorkPermitDailyStats = WorkPermitDailyStats()
+    progress_update_frequency: float = Field(default=0.0, description="平均进度更新频率(次/小时)")
+    stagnation_count: int = Field(default=0, description="停滞告警次数")
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
@@ -1552,6 +1559,64 @@ class FatigueThresholdUpdateRequest(BaseModel):
     severe_fatigue_hours: Optional[float] = Field(default=None, description="重度疲劳阈值(小时)")
     forced_shiftover_hours: Optional[float] = Field(default=None, description="强制换班阈值(小时)")
     rest_reset_minutes: Optional[float] = Field(default=None, description="休息重置阈值(分钟)")
+
+
+class OrderProgressUpdateRecord(BaseModel):
+    timestamp: float
+    progress_percent: float
+    delta_percent: float
+
+
+class OrderProgressTracking(BaseModel):
+    order_id: str
+    crane_id: str
+    current_progress: float = 0.0
+    estimated_remaining_seconds: Optional[float] = None
+    is_stagnated: bool = False
+    stagnation_started_at: Optional[float] = None
+    last_progress_update_at: Optional[float] = None
+    last_progress_value: float = 0.0
+    progress_history: List[OrderProgressUpdateRecord] = []
+    stagnation_alarm_generated: bool = False
+    has_path_plan: bool = False
+
+
+class OrderProgressStagnationAlarm(BaseModel):
+    alarm_id: str
+    order_id: str
+    crane_id: str
+    timestamp: float
+    datetime_str: str
+    stagnation_seconds: float
+    current_progress: float
+    message: str
+    details: Dict = {}
+    resolved: bool = False
+    resolved_at: Optional[float] = None
+
+
+class OrderProgressResponse(BaseModel):
+    order_id: str
+    crane_id: str
+    current_progress: float
+    estimated_remaining_seconds: Optional[float] = None
+    is_stagnated: bool
+    stagnation_seconds: float
+    last_progress_update_at: Optional[float] = None
+    execution_started_at: Optional[float] = None
+
+
+class OrderDeviationRatioStats(BaseModel):
+    crane_id: str
+    recent_orders_count: int
+    avg_deviation_ratio: Optional[float] = None
+    recent_orders: List[Dict] = []
+
+
+class OrderProgressConfig(BaseModel):
+    stagnation_detect_seconds: float = Field(default=30.0, description="停滞检测阈值(秒),连续无进度变化则判定为停滞")
+    stagnation_alarm_timeout_seconds: float = Field(default=180.0, description="停滞超时时长(秒),超过则生成告警")
+    rate_calculation_sample_size: int = Field(default=10, description="速率计算样本大小(最近N次进度更新)")
 
 
 class FatigueDailyStats(BaseModel):

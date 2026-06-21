@@ -348,6 +348,19 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
 
+    try:
+        from order_progress import count_progress_updates_for_crane, count_stagnation_alarms_for_crane
+        progress_update_count = count_progress_updates_for_crane(crane_id, start_ts, end_ts)
+        stagnation_count = count_stagnation_alarms_for_crane(crane_id, start_ts, end_ts)
+        if work_duration > 0:
+            progress_update_frequency = round(progress_update_count / (work_duration / 3600.0), 2)
+        else:
+            progress_update_frequency = 0.0
+    except ImportError:
+        progress_update_count = 0
+        stagnation_count = 0
+        progress_update_frequency = 0.0
+
     data_status = DailyReportDataStatus.COMPLETE
     remarks = ""
     if incomplete_orders:
@@ -511,6 +524,8 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         conflict_detection_stats=conflict_detection_stats,
         operator_fatigue_stats=operator_fatigue_list,
         work_permit_stats=work_permit_stats,
+        progress_update_frequency=progress_update_frequency,
+        stagnation_count=stagnation_count,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,

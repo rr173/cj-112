@@ -151,6 +151,12 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
     add_status_report_to_history(history_record)
     add_status_to_window(status)
 
+    try:
+        from order_progress import update_progress_on_status_report
+        update_progress_on_status_report(status.crane_id, status)
+    except ImportError:
+        pass
+
     now = status.timestamp or time.time()
     fatigue_result = process_status_report_for_fatigue(status.crane_id, now)
 

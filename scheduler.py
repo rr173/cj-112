@@ -442,6 +442,12 @@ def start_order(order_id: str) -> Dict:
     except ImportError:
         pass
 
+    try:
+        from order_progress import init_order_progress
+        init_order_progress(order_id, crane_id, has_path_plan=True)
+    except ImportError:
+        pass
+
     if order_id in crane_queues.get(crane_id, deque()):
         crane_queues[crane_id].remove(order_id)
 
@@ -526,6 +532,12 @@ def confirm_and_start_order(order_id: str, direction: PathDirection) -> Dict:
     except ImportError:
         pass
 
+    try:
+        from order_progress import init_order_progress
+        init_order_progress(order_id, crane_id, has_path_plan=True)
+    except ImportError:
+        pass
+
     if order_id in crane_queues.get(crane_id, deque()):
         crane_queues[crane_id].remove(order_id)
 
@@ -597,6 +609,12 @@ def complete_order(order_id: str) -> Dict:
     execution_record = None
     if active_plan and order.started_at:
         execution_record = record_path_execution(order_id, active_plan, order.started_at, now)
+
+    try:
+        from order_progress import complete_order_progress
+        complete_order_progress(order_id)
+    except ImportError:
+        pass
 
     order.status = WorkOrderStatus.COMPLETED
     order.completed_at = now

@@ -48,6 +48,7 @@ from energy_monitor import init_energy_monitor_module, check_and_reset_daily
 from emergency_response import init_emergency_response_module, check_and_trigger_emergency, check_auto_escalation
 from conflict_scheduler import init_conflict_scheduler_module
 from work_permit import init_work_permit_module, check_and_revoke_if_needed
+from order_progress import init_order_progress_module
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -276,6 +277,7 @@ def init_cranes():
     from fatigue_monitor import init_fatigue_monitor_module
     init_fatigue_monitor_module()
     init_work_permit_module()
+    init_order_progress_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
