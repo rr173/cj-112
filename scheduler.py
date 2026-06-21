@@ -562,12 +562,6 @@ def complete_order(order_id: str) -> Dict:
     if not crane_id:
         return {"error": "工单未分配塔吊，无法完成"}
 
-    try:
-        from work_permit import check_and_expire_extension_on_order_complete
-        check_and_expire_extension_on_order_complete(crane_id)
-    except ImportError:
-        pass
-
     for sec_id in order.acquired_sectors:
         ts = token_statuses.get(sec_id)
         if ts and ts.holder_crane_id and ts.holder_crane_id != crane_id:
@@ -608,6 +602,12 @@ def complete_order(order_id: str) -> Dict:
     order.completed_at = now
     order.updated_at = now
     order.acquired_sectors = []
+
+    try:
+        from work_permit import check_and_expire_extension_on_order_complete
+        check_and_expire_extension_on_order_complete(crane_id)
+    except ImportError:
+        pass
 
     if crane_id:
         _init_crane_queue(crane_id)

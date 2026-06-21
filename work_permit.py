@@ -401,6 +401,7 @@ def apply_work_permit(crane_id: str) -> Dict:
 
 def get_crane_current_permit(crane_id: str) -> Optional[WorkPermit]:
     _expire_outdated_permits()
+    check_and_revoke_if_needed(crane_id)
     permit_id = crane_active_permit.get(crane_id)
     if not permit_id:
         return None

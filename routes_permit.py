@@ -34,14 +34,6 @@ def api_get_permit_status(crane_id: str):
     return result
 
 
-@router.get("/{permit_id}", summary="查询单个许可证详情")
-def api_get_permit(permit_id: str):
-    permit = get_permit(permit_id)
-    if not permit:
-        raise HTTPException(status_code=404, detail=f"作业许可证 {permit_id} 不存在")
-    return permit
-
-
 @router.get("/history", summary="查询许可证历史记录")
 def api_get_permit_history(
     crane_id: Optional[str] = None,
@@ -61,6 +53,14 @@ def api_get_permit_history(
         "total": len(permits),
         "permits": permits,
     }
+
+
+@router.get("/{permit_id}", summary="查询单个许可证详情")
+def api_get_permit(permit_id: str):
+    permit = get_permit(permit_id)
+    if not permit:
+        raise HTTPException(status_code=404, detail=f"作业许可证 {permit_id} 不存在")
+    return permit
 
 
 @router.post("/extension/request", summary="申请许可证延期")
