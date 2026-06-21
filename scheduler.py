@@ -52,6 +52,12 @@ def can_crane_cover(crane_id: str, lift_x: float, lift_y: float,
     if not can_crane_reach_point(crane_id, drop_x, drop_y):
         return False
     try:
+        from work_permit import has_valid_permit
+        if not has_valid_permit(crane_id):
+            return False
+    except ImportError:
+        pass
+    try:
         from cooperative_lift import is_crane_in_active_cooperative_task
         if is_crane_in_active_cooperative_task(crane_id):
             return False
@@ -149,6 +155,12 @@ def _build_failure_reason(lift_x: float, lift_y: float,
             issues.append("无法覆盖起吊点")
         if not can_crane_reach_point(crane_id, drop_x, drop_y):
             issues.append("无法覆盖落点")
+        try:
+            from work_permit import has_valid_permit
+            if not has_valid_permit(crane_id):
+                issues.append("无有效的当日作业许可证")
+        except ImportError:
+            pass
         try:
             from cooperative_lift import is_crane_in_active_cooperative_task
             if is_crane_in_active_cooperative_task(crane_id):
@@ -268,6 +280,13 @@ def manually_assign_order(order_id: str, crane_id: str) -> Dict:
         return {"error": f"塔吊 {crane_id} 不存在"}
 
     try:
+        from work_permit import has_valid_permit
+        if not has_valid_permit(crane_id):
+            return {"error": f"塔吊 {crane_id} 无有效的当日作业许可证，无法分配工单，请先申请作业许可"}
+    except ImportError:
+        pass
+
+    try:
         from cooperative_lift import is_crane_in_active_cooperative_task
         if is_crane_in_active_cooperative_task(crane_id):
             return {"error": f"塔吊 {crane_id} 正在参与协同吊装任务，无法分配普通工单"}
@@ -283,7 +302,7 @@ def manually_assign_order(order_id: str, crane_id: str) -> Dict:
 
     if not can_crane_cover(crane_id, order.lift_x, order.lift_y,
                            order.drop_x, order.drop_y, order.weight):
-        return {"error": f"塔吊 {crane_id} 无法覆盖该工单的起吊点和/或落点，或预估重量超限，或处于风速停机状态"}
+        return {"error": f"塔吊 {crane_id} 无法覆盖该工单的起吊点和/或落点，或预估重量超限，或无有效作业许可证，或处于风速停机状态"}
 
     if order.status == WorkOrderStatus.ASSIGNED and order.assigned_crane_id:
         old_crane = order.assigned_crane_id
@@ -542,6 +561,12 @@ def complete_order(order_id: str) -> Dict:
     crane_id = order.assigned_crane_id
     if not crane_id:
         return {"error": "工单未分配塔吊，无法完成"}
+
+    try:
+        from work_permit import check_and_expire_extension_on_order_complete
+        check_and_expire_extension_on_order_complete(crane_id)
+    except ImportError:
+        pass
 
     for sec_id in order.acquired_sectors:
         ts = token_statuses.get(sec_id)

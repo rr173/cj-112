@@ -44,6 +44,18 @@ def report_crane_status(status: CraneStatus, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail=f"塔吊 {status.crane_id} 不存在")
 
     try:
+        from work_permit import check_and_revoke_if_needed, check_permit_and_get_rejection
+        check_and_revoke_if_needed(status.crane_id)
+        permit_rejection = check_permit_and_get_rejection(status.crane_id)
+        if permit_rejection:
+            raise HTTPException(
+                status_code=403,
+                detail=permit_rejection,
+            )
+    except ImportError:
+        pass
+
+    try:
         from maintenance import check_all_windows, is_crane_in_maintenance, increment_suppressed_alarm
         check_all_windows()
         in_maintenance = is_crane_in_maintenance(status.crane_id)

@@ -35,6 +35,7 @@ from routes_energy import router as energy_router
 from routes_emergency import router as emergency_router
 from routes_conflict import router as conflict_router
 from routes_fatigue import router as fatigue_router
+from routes_permit import router as permit_router
 from anomaly_detector import init_anomaly_detector
 from daily_report import init_daily_report_module, generate_daily_reports, get_today_date_str
 from maintenance import init_maintenance_module, check_all_windows, check_due_soon_alarms
@@ -46,6 +47,7 @@ from wind_speed_monitor import init_wind_speed_monitor_module
 from energy_monitor import init_energy_monitor_module, check_and_reset_daily
 from emergency_response import init_emergency_response_module, check_and_trigger_emergency, check_auto_escalation
 from conflict_scheduler import init_conflict_scheduler_module
+from work_permit import init_work_permit_module, check_and_revoke_if_needed
 
 app = FastAPI(title="塔吊防碰撞联锁服务", description="建筑工地多塔吊防碰撞实时监测系统")
 
@@ -65,6 +67,7 @@ app.include_router(energy_router)
 app.include_router(emergency_router)
 app.include_router(conflict_router)
 app.include_router(fatigue_router)
+app.include_router(permit_router)
 
 
 _daily_report_scheduler_thread: threading.Thread = None
@@ -72,6 +75,7 @@ _maintenance_scheduler_thread: threading.Thread = None
 _inspection_scheduler_thread: threading.Thread = None
 _energy_reset_scheduler_thread: threading.Thread = None
 _emergency_scheduler_thread: threading.Thread = None
+_work_permit_scheduler_thread: threading.Thread = None
 _scheduler_running = False
 
 
@@ -187,6 +191,24 @@ def _emergency_scheduler_loop():
         time.sleep(10)
 
 
+def _work_permit_scheduler_loop():
+    global _scheduler_running
+    _scheduler_running = True
+    while _scheduler_running:
+        try:
+            revoked_count = 0
+            for cid in list(cranes_config.keys()):
+                revoked = check_and_revoke_if_needed(cid)
+                if revoked:
+                    revoked_count += 1
+                    print(f"[作业许可定时检查] 塔吊 {cid} 许可证已被自动吊销")
+            if revoked_count > 0:
+                print(f"[作业许可定时检查] 本次检查共吊销 {revoked_count} 个作业许可证")
+        except Exception as e:
+            print(f"[作业许可定时检查] 执行异常: {e}")
+        time.sleep(30)
+
+
 @app.on_event("startup")
 def init_cranes():
     preset_cranes = [
@@ -253,6 +275,7 @@ def init_cranes():
     init_conflict_scheduler_module()
     from fatigue_monitor import init_fatigue_monitor_module
     init_fatigue_monitor_module()
+    init_work_permit_module()
 
     global _daily_report_scheduler_thread
     if _daily_report_scheduler_thread is None or not _daily_report_scheduler_thread.is_alive():
@@ -283,6 +306,12 @@ def init_cranes():
         _emergency_scheduler_thread = threading.Thread(target=_emergency_scheduler_loop, daemon=True)
         _emergency_scheduler_thread.start()
         print("[应急响应定时检查] 已启动，每10秒检查一次复合告警")
+
+    global _work_permit_scheduler_thread
+    if _work_permit_scheduler_thread is None or not _work_permit_scheduler_thread.is_alive():
+        _work_permit_scheduler_thread = threading.Thread(target=_work_permit_scheduler_loop, daemon=True)
+        _work_permit_scheduler_thread.start()
+        print("[作业许可定时检查] 已启动，每30秒检查一次许可证条件变化")
 
 
 @app.on_event("shutdown")

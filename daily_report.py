@@ -337,6 +337,13 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
 
     conflict_detection_stats = count_conflict_detection(start_ts, end_ts)
 
+    try:
+        from work_permit import get_work_permit_daily_stats
+        work_permit_stats = get_work_permit_daily_stats(crane_id, start_ts, end_ts)
+    except ImportError:
+        from models import WorkPermitDailyStats
+        work_permit_stats = WorkPermitDailyStats()
+
     work_duration = 0.0
     if first_ts and last_ts:
         work_duration = last_ts - first_ts
@@ -346,6 +353,24 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
     if incomplete_orders:
         data_status = DailyReportDataStatus.INCOMPLETE
         remarks = f"存在未完成工单: {', '.join(incomplete_orders)}"
+
+    if work_permit_stats.permit_issued:
+        if remarks:
+            remarks += " | "
+        issued_time_str = datetime.fromtimestamp(work_permit_stats.issued_at).strftime("%H:%M:%S") if work_permit_stats.issued_at else "N/A"
+        permit_parts = [f"当日{issued_time_str}已发放作业许可证"]
+        if work_permit_stats.revoke_count > 0:
+            permit_parts.append(f"被吊销{work_permit_stats.revoke_count}次")
+        if work_permit_stats.extension_applied:
+            permit_parts.append("申请过延期")
+            if work_permit_stats.extension_approved and work_permit_stats.extended_expiry:
+                ext_time_str = datetime.fromtimestamp(work_permit_stats.extended_expiry).strftime("%H:%M:%S")
+                permit_parts.append(f"延期已批准(至{ext_time_str})")
+        remarks += "，".join(permit_parts)
+    else:
+        if remarks:
+            remarks += " | "
+        remarks += "当日未发放作业许可证"
 
     if maintenance_stats.in_maintenance_period:
         if remarks:
@@ -485,6 +510,7 @@ def generate_daily_report_for_crane(crane_id: str, date_str: str) -> Optional[Da
         emergency_stats=emergency_stats,
         conflict_detection_stats=conflict_detection_stats,
         operator_fatigue_stats=operator_fatigue_list,
+        work_permit_stats=work_permit_stats,
         data_status=data_status,
         incomplete_orders=incomplete_orders,
         remarks=remarks,

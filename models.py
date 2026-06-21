@@ -78,6 +78,12 @@ class AlarmType(str, Enum):
     FATIGUE_SEVERE_WARNING = "FATIGUE_SEVERE_WARNING"
     FATIGUE_FORCED_SHIFTOVER = "FATIGUE_FORCED_SHIFTOVER"
     FATIGUE_RECOVERY = "FATIGUE_RECOVERY"
+    WORK_PERMIT_ISSUED = "WORK_PERMIT_ISSUED"
+    WORK_PERMIT_REVOKED = "WORK_PERMIT_REVOKED"
+    WORK_PERMIT_EXPIRED = "WORK_PERMIT_EXPIRED"
+    WORK_PERMIT_EXTENSION_REQUESTED = "WORK_PERMIT_EXTENSION_REQUESTED"
+    WORK_PERMIT_EXTENSION_APPROVED = "WORK_PERMIT_EXTENSION_APPROVED"
+    WORK_PERMIT_EXTENSION_REJECTED = "WORK_PERMIT_EXTENSION_REJECTED"
 
 
 class WindAlarmLevel(str, Enum):
@@ -595,6 +601,91 @@ class ConflictDetectionDailyStats(BaseModel):
     detection_report_ids: List[str] = []
 
 
+class WorkPermitCheckItem(str, Enum):
+    OPERATOR_QUALIFIED = "OPERATOR_QUALIFIED"
+    INSPECTION_COMPLETED = "INSPECTION_COMPLETED"
+    NO_MAINTENANCE_WINDOW = "NO_MAINTENANCE_WINDOW"
+    NO_FORCED_SHIFTOVER = "NO_FORCED_SHIFTOVER"
+    NO_WIND_SHUTDOWN = "NO_WIND_SHUTDOWN"
+
+
+class WorkPermitStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
+    EXPIRED = "EXPIRED"
+
+
+class WorkPermitExtensionStatus(str, Enum):
+    NONE = "NONE"
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class WorkPermitCheckResult(BaseModel):
+    check_item: WorkPermitCheckItem
+    passed: bool
+    message: str
+    details: Dict = {}
+
+
+class WorkPermitExtension(BaseModel):
+    extension_id: str
+    requested_at: float
+    requested_by: str
+    requested_expiry: float
+    status: WorkPermitExtensionStatus
+    reviewed_at: Optional[float] = None
+    reviewed_by: Optional[str] = None
+    review_remark: Optional[str] = None
+
+
+class WorkPermit(BaseModel):
+    permit_id: str
+    crane_id: str
+    crane_name: str
+    status: WorkPermitStatus
+    issued_at: float
+    expires_at: float
+    check_results: List[WorkPermitCheckResult]
+    all_passed: bool
+    operator_id: Optional[str] = None
+    operator_name: Optional[str] = None
+    revoked_at: Optional[float] = None
+    revoke_reason: Optional[str] = None
+    revoked_by_condition: Optional[WorkPermitCheckItem] = None
+    extension: Optional[WorkPermitExtension] = None
+    permit_date: str
+
+
+class WorkPermitApplyRequest(BaseModel):
+    crane_id: str
+
+
+class WorkPermitExtensionRequest(BaseModel):
+    crane_id: str
+    requested_by: str
+    requested_expiry: float
+
+
+class WorkPermitExtensionApproveRequest(BaseModel):
+    permit_id: str
+    approved: bool
+    reviewed_by: str
+    review_remark: Optional[str] = Field(default="", description="审批备注")
+    approved_expiry: Optional[float] = Field(default=None, description="批准的到期时间，不填则使用申请时间")
+
+
+class WorkPermitDailyStats(BaseModel):
+    permit_issued: bool = False
+    permit_id: Optional[str] = None
+    issued_at: Optional[float] = None
+    revoke_count: int = 0
+    extension_applied: bool = False
+    extension_approved: bool = False
+    extended_expiry: Optional[float] = None
+
+
 class DailyReport(BaseModel):
     report_id: str
     crane_id: str
@@ -613,6 +704,7 @@ class DailyReport(BaseModel):
     emergency_stats: EmergencyDailyStats = EmergencyDailyStats()
     conflict_detection_stats: ConflictDetectionDailyStats = ConflictDetectionDailyStats()
     operator_fatigue_stats: List["OperatorFatigueDailySummary"] = []
+    work_permit_stats: WorkPermitDailyStats = WorkPermitDailyStats()
     data_status: DailyReportDataStatus = DailyReportDataStatus.COMPLETE
     incomplete_orders: List[str] = []
     remarks: str = ""
