@@ -462,8 +462,12 @@ def _revoke_permit_internal(
 
 
 def check_and_revoke_if_needed(crane_id: str) -> Optional[WorkPermit]:
-    permit = get_crane_current_permit(crane_id)
-    if not permit:
+    _expire_outdated_permits()
+    permit_id = crane_active_permit.get(crane_id)
+    if not permit_id:
+        return None
+    permit = work_permits.get(permit_id)
+    if not permit or permit.status != WorkPermitStatus.ACTIVE or time.time() > permit.expires_at:
         return None
 
     check_results, all_passed = _run_all_checks(crane_id)
