@@ -22,6 +22,7 @@ from path_planner import active_path_plans, PathDirection
 _progress_config = OrderProgressConfig()
 
 active_progress_tracking: Dict[str, OrderProgressTracking] = {}
+completed_progress_history: Dict[str, OrderProgressTracking] = {}
 stagnation_alarms: List[OrderProgressStagnationAlarm] = []
 crane_current_executing_order: Dict[str, str] = {}
 
@@ -36,6 +37,7 @@ def _angular_distance_ccw(start_angle: float, end_angle: float) -> float:
 
 def init_order_progress_module():
     active_progress_tracking.clear()
+    completed_progress_history.clear()
     stagnation_alarms.clear()
     crane_current_executing_order.clear()
 
@@ -74,14 +76,15 @@ def init_order_progress(order_id: str, crane_id: str, has_path_plan: bool):
         order.last_progress_updated_at = now
 
 
-def _calculate_progress_by_path(order_id: str, current_angle: float) -> float:
+def _calculate_progress_by_path(order_id: str, current_angle: float,
+                                crane_id: str, trolley_position: float) -> float:
     plan = active_path_plans.get(order_id)
     if not plan:
         return 0.0
 
     total_sweep = plan.angular_distance
     if total_sweep <= 0:
-        return 100.0
+        return _calculate_progress_by_distance(order_id, crane_id, trolley_position)
 
     if plan.direction == PathDirection.CW:
         traveled = _angular_distance_cw(plan.lift_angle, current_angle)
@@ -193,7 +196,7 @@ def update_progress_on_status_report(crane_id: str, status: CraneStatus):
     current_angle = normalize_angle(status.rotation_angle)
 
     if tracking.has_path_plan and active_path_plans.get(order_id):
-        raw_progress = _calculate_progress_by_path(order_id, current_angle)
+        raw_progress = _calculate_progress_by_path(order_id, current_angle, crane_id, status.trolley_position)
     else:
         raw_progress = _calculate_progress_by_distance(order_id, crane_id, status.trolley_position)
 
@@ -277,6 +280,7 @@ def complete_order_progress(order_id: str):
     if crane_current_executing_order.get(crane_id) == order_id:
         del crane_current_executing_order[crane_id]
 
+    completed_progress_history[order_id] = tracking
     active_progress_tracking.pop(order_id, None)
 
 
@@ -389,7 +393,8 @@ def get_stagnation_alarms(crane_id: Optional[str] = None,
 
 def count_progress_updates_for_crane(crane_id: str, start_ts: float, end_ts: float) -> int:
     count = 0
-    for tracking in active_progress_tracking.values():
+    all_trackings = list(active_progress_tracking.values()) + list(completed_progress_history.values())
+    for tracking in all_trackings:
         if tracking.crane_id != crane_id:
             continue
         for record in tracking.progress_history:
